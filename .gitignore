@@ -1,0 +1,14 @@
+# Только код в репо (решение Абдулы 28.05.2026). Внутренние документы,
+# ревью и чек-листы живут в проектной папке за пределами репо.
+
+# Документация и ревью
+README.md
+REVIEW-*.md
+FUNCTIONAL_TEST_*.md
+PREFLIGHT_*.md
+FALLBACK_INSTRUCTION.md
+
+# macOS / редакторы
+.DS_Store
+*.swp
+*.swo

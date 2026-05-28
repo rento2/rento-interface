@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ренто — Учёт</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800;900&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app"></div>
+
+  <!--
+    Порядок загрузки важен. Все скрипты с defer выполняются строго по
+    порядку после разбора HTML и до DOMContentLoaded:
+      1. конфиг и модули приложения;
+      2. gapi (api.js) — определяет window.gapi;
+      3. GIS (gsi/client) — определяет window.google.accounts;
+      4. app.js — на старте обе библиотеки уже доступны.
+  -->
+  <!-- ?v= — анти-кеш на время разработки: браузер не отдаёт старый JS.
+       Порядок: данные -> операции -> вид -> склейка. app.js — последним. -->
+  <script defer src="src/config.js?v=23"></script>
+  <script defer src="src/sheets.js?v=23"></script>
+  <script defer src="src/auth.js?v=23"></script>
+  <script defer src="src/cache.js?v=23"></script>
+  <script defer src="src/journal.js?v=23"></script>
+  <script defer src="src/operations.js?v=23"></script>
+  <script defer src="src/queue.js?v=23"></script>
+  <script defer src="src/ui.js?v=23"></script>
+  <script defer src="src/screens.js?v=23"></script>
+  <script defer src="src/forms.js?v=23"></script>
+  <script defer src="https://apis.google.com/js/api.js"></script>
+  <script defer src="https://accounts.google.com/gsi/client"></script>
+  <script defer src="src/app.js?v=23"></script>
+</body>
+</html>

@@ -1,0 +1,889 @@
+/*
+ * styles.css — стили интерфейса Ренто.
+ * Токены (палитра, типографика) сняты с фрейма Design System в учёт.pen.
+ */
+
+/* --- токены дизайн-системы ------------------------------------------- */
+:root {
+  --lime-500: #ccff00;
+  --lime-100: #e5ff80;
+  --lime-50: #f5ffcc;
+  --lime-700: #5c7a00;
+  --ink: #1a1a1a;
+  --surface-0: #ffffff;
+  --surface-1: #fafaf5;
+  --surface-2: #f3f1ed;
+  --border: #e5e5e0;
+  --success: #16a34a;
+  --warning: #d97706;
+  --error: #dc2626;
+  --text-2: #666666;
+  --text-3: #999999;
+  --text-body: #333333;
+
+  --radius-card: 20px;
+  --radius-field: 16px;
+  --radius-pill: 999px;
+
+  --shadow-elev1: 0 2px 8px #0000000a;
+  --shadow-elev2: 0 8px 32px #00000014;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--surface-1);
+  color: var(--ink);
+  font-family: 'Onest', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* --- типографика ----------------------------------------------------- */
+.h1 { margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.5px; }
+.h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
+.h3 { margin: 0; font-size: 16px; font-weight: 600; }
+
+.eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.32px;
+  color: var(--text-2);
+}
+.eyebrow-sub { margin-top: 8px; }
+
+.muted { margin: 0; font-size: 14px; color: var(--text-2); }
+.caption { margin: 0; font-size: 13px; font-weight: 500; color: var(--text-2); }
+
+/* --- логотип --------------------------------------------------------- */
+.logo { display: flex; align-items: center; gap: 10px; }
+.logo-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 12px;
+  background: var(--lime-500);
+}
+.logo-text { font-size: 24px; font-weight: 900; letter-spacing: -0.8px; }
+
+/* --- карточка / экраны входа ----------------------------------------- */
+.auth-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.card {
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  box-shadow: var(--shadow-elev2);
+}
+
+.auth-card {
+  width: 440px;
+  max-width: 100%;
+  padding: 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.auth-title { display: flex; flex-direction: column; gap: 8px; }
+.auth-form { display: flex; flex-direction: column; gap: 20px; }
+
+.auth-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+/* --- поля ------------------------------------------------------------ */
+.field { display: flex; flex-direction: column; gap: 8px; }
+.field-label { font-size: 13px; font-weight: 600; color: var(--text-body); }
+
+.field-input {
+  width: 100%;
+  padding: 14px 16px;
+  font-family: inherit;
+  font-size: 16px;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-field);
+  outline: none;
+  transition: border-color 0.12s, box-shadow 0.12s, background 0.12s;
+}
+.field-input::placeholder { color: var(--text-3); }
+.field-input:focus {
+  background: var(--surface-0);
+  border-color: var(--lime-500);
+  box-shadow: 0 0 0 3px #ccff001f;
+}
+
+.field-select { appearance: none; cursor: pointer; }
+
+.field-error { font-size: 13px; font-weight: 500; color: var(--error); }
+
+.error-banner {
+  padding: 12px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--error);
+  background: #dc262614;
+  border-radius: 12px;
+}
+
+/* --- кнопки ---------------------------------------------------------- */
+.btn-primary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 48px;
+  padding: 0 56px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  color: #000;
+  background: var(--lime-500);
+  border: none;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: filter 0.12s;
+}
+.btn-primary:hover { filter: brightness(0.96); }
+.btn-primary:disabled { opacity: 0.55; cursor: default; }
+
+.btn-inert { width: auto; padding: 0 32px; cursor: default; }
+.btn-inert:hover { filter: none; }
+
+.link-btn {
+  padding: 0;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--text-2);
+  background: none;
+  border: none;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* --- шапка приложения ------------------------------------------------ */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 40px;
+  background: var(--surface-0);
+  border-bottom: 1px solid var(--border);
+}
+.header-right { display: flex; align-items: center; gap: 12px; }
+
+/* --- индикатор очереди (заглушка) ------------------------------------ */
+.queue-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 22px;
+  border-radius: var(--radius-pill);
+  font-size: 13px;
+  font-weight: 600;
+}
+.queue-dot { width: 8px; height: 8px; border-radius: 50%; }
+.queue-ok { background: #16a34a14; color: var(--success); }
+.queue-ok .queue-dot { background: var(--success); }
+
+/* --- кнопка обновления / чип пользователя ---------------------------- */
+.refresh-btn,
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 22px;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  font-family: inherit;
+  font-size: 13px;
+}
+.refresh-btn { cursor: pointer; color: var(--text-body); font-weight: 500; }
+.refresh-btn:disabled { opacity: 0.6; cursor: default; }
+.refresh-icon { color: var(--text-2); font-weight: 700; }
+
+.user-chip { gap: 10px; }
+.user-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--lime-100);
+}
+.user-name { font-size: 13px; font-weight: 600; color: var(--ink); }
+.user-sep { color: var(--text-3); font-weight: 700; }
+
+/* --- роль-чип -------------------------------------------------------- */
+.role-chip {
+  padding: 5px 16px;
+  background: var(--ink);
+  color: var(--surface-0);
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+/* --- основная область ------------------------------------------------ */
+.app-main {
+  display: flex;
+  flex-direction: column;
+  gap: 48px;
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 48px 40px;
+}
+
+.greet { display: flex; flex-direction: column; gap: 6px; }
+.greet-row { display: flex; align-items: center; gap: 12px; }
+
+.section { display: flex; flex-direction: column; gap: 16px; }
+.section-head { display: flex; flex-direction: column; gap: 4px; }
+
+/* --- карточки действий ----------------------------------------------- */
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+}
+
+.form-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 140px;
+  padding: 24px;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-elev1);
+}
+.form-card-icon { font-size: 32px; font-weight: 600; color: var(--lime-700); }
+.form-card-label {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  color: var(--ink);
+}
+
+/* --- карточка отчёта ------------------------------------------------- */
+.report-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 28px;
+  background: var(--lime-50);
+  border: 1px solid #d6ff40;
+  border-radius: var(--radius-card);
+}
+.report-info { display: flex; align-items: center; gap: 20px; }
+.report-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  font-size: 24px;
+  background: var(--surface-0);
+  border: 1px solid #d6ff40;
+  border-radius: var(--radius-field);
+}
+
+/* --- адаптив --------------------------------------------------------- */
+/* --- индикатор очереди: состояния (§5.3) ----------------------------- */
+.queue-sending { background: #ccff0033; color: var(--lime-700); }
+.queue-sending .queue-dot { background: var(--lime-700); }
+.queue-retry { background: #d9770614; color: var(--warning); }
+.queue-retry .queue-dot { background: var(--warning); }
+.queue-failed { background: #dc262614; color: var(--error); }
+.queue-failed .queue-dot { background: var(--error); }
+
+/* --- кнопки ---------------------------------------------------------- */
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  padding: 0 32px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  background: none;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+.btn-ghost:disabled { opacity: 0.5; cursor: default; }
+
+/* Активная карточка (рабочая форма) — кликабельна, остальные инертны. */
+.form-card-active { cursor: pointer; transition: border-color 0.12s, box-shadow 0.12s; }
+.form-card-active:hover {
+  border-color: var(--lime-500);
+  box-shadow: 0 6px 20px #00000014;
+}
+
+/* --- модальное окно -------------------------------------------------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: #1a1a1a66;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 16px;
+  overflow-y: auto;
+  z-index: 100;
+}
+.modal-card {
+  width: 480px;
+  max-width: 100%;
+  background: var(--surface-0);
+  border-radius: 24px;
+  box-shadow: var(--shadow-elev2);
+  padding: 32px;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.modal-close {
+  width: 32px;
+  height: 32px;
+  font-size: 16px;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+/* --- форма операции -------------------------------------------------- */
+.op-form { display: flex; flex-direction: column; gap: 20px; }
+.field-stack { display: flex; flex-direction: column; gap: 6px; }
+.field-hint { font-size: 12px; color: var(--text-2); }
+.draft-note {
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--lime-700);
+  background: var(--lime-50);
+  border-radius: 12px;
+}
+
+/* --- экран формы операции (ADR-006) ---------------------------------- */
+/* Хлебные крошки под шапкой. */
+.nav-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 20px 40px 0;
+}
+.crumb-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: none;
+  border: none;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.crumb-back:hover { background: var(--surface-2); }
+.crumb-arrow { font-weight: 700; }
+.crumb-sep { color: var(--text-3); font-weight: 700; }
+.crumb-text { font-size: 13px; font-weight: 500; color: var(--text-2); }
+.crumb-current { font-size: 13px; font-weight: 600; color: var(--ink); }
+
+/* Карточка формы по центру области. .form-main — обычный блок (не flex):
+   карточка центрируется своим margin:0 auto. Flex-контейнер здесь дал бы
+   ловушку min-width:auto — карточка не сжималась бы на узком экране. */
+.form-main {
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 32px 40px 64px;
+}
+.op-card {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  width: 640px;
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 40px;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  box-shadow: var(--shadow-elev2);
+}
+.op-card-title { display: flex; flex-direction: column; gap: 6px; }
+.op-divider { height: 1px; background: var(--border); }
+
+.op-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.op-footer-hint { font-size: 12px; font-weight: 500; color: var(--text-3); }
+.op-footer-actions { display: flex; align-items: center; gap: 12px; }
+/* «Отмена» (.btn-ghost) и «Сохранить» (.btn-primary) — на одну высоту. */
+.op-footer-actions .btn-ghost { height: 48px; }
+
+/* Кнопка авто-ширины (для футера формы; базовая .btn-primary — 100%). */
+.btn-auto { width: auto; min-width: 180px; padding: 0 40px; }
+
+/* --- сводка исходной операции в форме корректировки (§16, TICKET-6.1) - */
+/* Read-only сводка: пары «метка — значение» столбиком. Структурные поля
+   исходной операции корректировка не меняет; для основателя они здесь
+   как контекст, чтобы не открывать журнал параллельно. */
+.op-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 20px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-field);
+}
+.op-summary-row {
+  display: flex;
+  gap: 16px;
+  align-items: baseline;
+  font-size: 13px;
+}
+.op-summary-label {
+  flex: 0 0 140px;
+  color: var(--text-2);
+  font-weight: 500;
+}
+.op-summary-value {
+  flex: 1;
+  color: var(--ink);
+  font-weight: 600;
+  word-break: break-word;
+}
+
+/* --- экран «Поиск операций» (§18.2, TICKET-6.1) ---------------------- */
+/* Карточка поиска шире обычной 640px — нужна для таблицы результатов. */
+.op-search-form { width: 100%; }
+.op-search-form .op-search-fields {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 16px;
+}
+.op-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-x: auto;
+}
+.op-search-results .today-table { min-width: 720px; }
+/* Расширяем карточку формы для экрана поиска (узкая 640px тесная под
+   таблицу). Селектор — через op-search-form внутри op-card. */
+.op-card:has(.op-search-form) { width: 960px; }
+
+@media (max-width: 720px) {
+  .op-search-form .op-search-fields {
+    grid-template-columns: 1fr;
+  }
+  .op-summary-row { flex-direction: column; gap: 2px; }
+  .op-summary-label { flex: 0 0 auto; }
+}
+
+/* --- кнопка «?» в шапке и страница помощи (TICKET-6.2) -------------- */
+.help-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.help-btn:hover { background: var(--ink); color: var(--surface-0); }
+
+.help-content {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+.help-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.help-details {
+  padding: 12px 16px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-field);
+}
+.help-summary {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  list-style: none;
+}
+.help-summary::-webkit-details-marker { display: none; }
+.help-summary::before {
+  content: '▸';
+  display: inline-block;
+  width: 16px;
+  color: var(--text-3);
+  font-weight: 700;
+}
+.help-details[open] > .help-summary::before { content: '▾'; }
+.help-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding-left: 16px;
+}
+.help-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-body);
+}
+.help-text.muted { color: var(--text-3); }
+
+/* --- секция «сегодня» ------------------------------------------------ */
+.today-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.segmented {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--surface-2);
+  border-radius: var(--radius-pill);
+}
+.seg-btn {
+  padding: 6px 18px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: none;
+  border: none;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+.seg-active { background: var(--surface-0); color: var(--ink); }
+
+.today-table {
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+.today-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.today-row:last-child { border-bottom: none; }
+.today-thead {
+  background: var(--surface-1);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.32px;
+  color: var(--text-3);
+}
+.row-cancelled { opacity: 0.55; }
+.tc { font-size: 14px; }
+.tc-check { width: 24px; flex: none; }
+.tc-id { width: 180px; flex: none; font-size: 13px; color: var(--text-2); }
+.tc-type { width: 110px; flex: none; font-weight: 600; }
+.tc-desc { flex: 1; min-width: 120px; }
+.tc-sum { width: 120px; flex: none; font-weight: 700; text-align: right; }
+.tc-status { width: 110px; flex: none; }
+
+.status-badge {
+  padding: 3px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: var(--radius-pill);
+}
+.st-active { background: #16a34a14; color: var(--success); }
+.st-cancelled { background: var(--surface-2); color: var(--text-2); }
+
+.today-actions { display: flex; justify-content: flex-end; }
+
+/* --- формы Инкремента 3: доп. элементы ------------------------------- */
+/* Подпись поля с припиской справа («необязательно», «обязательно»). */
+.field-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.field-aside { font-size: 12px; font-weight: 500; color: var(--text-3); }
+
+.field-textarea {
+  min-height: 84px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+/* Textarea «Превью отчёта собственнику» (§17.4): моноширинно, чтобы
+   колонки сумм выровнялись (padEnd/padStart рассчитывает на моноширин). */
+.report-area {
+  min-height: 360px;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+/* Два поля в ряд (период покрытия «с / по»). */
+.field-row-2 { display: flex; gap: 12px; }
+.field-row-2 > .field-stack { flex: 1; }
+.field-sub { font-size: 12px; font-weight: 500; color: var(--text-2); }
+
+/* Ссылка «+ предложить новую категорию» под выпадашкой категорий. */
+.propose-link {
+  align-self: flex-start;
+  color: var(--lime-700);
+  font-weight: 600;
+  text-decoration: none;
+}
+.propose-link:hover { text-decoration: underline; }
+
+/* Подсказка по долгу под полем получателя в «+ Выплата». */
+.debt-hint { font-weight: 600; color: var(--text-body); }
+
+/* --- модалка «Предложить категорию» ---------------------------------- */
+.modal-form { display: flex; flex-direction: column; gap: 16px; }
+.modal-ctx {
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text-body);
+  background: var(--surface-2);
+  border-radius: 12px;
+}
+.pending-note {
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--warning);
+  background: #d9770614;
+  border-radius: 12px;
+}
+
+/* --- форма «+ Заселение» (§7) ---------------------------------------- */
+/* Секции внутри карточки формы (БРОНИРОВАНИЕ / ФИНАНСЫ / РАСПРЕДЕЛЕНИЕ). */
+.form-section { display: flex; flex-direction: column; gap: 16px; }
+
+/* Поле-читалка: значение, которое нельзя править (чистая выручка и т.п.). */
+.field-readout {
+  display: flex;
+  align-items: center;
+  padding: 14px 16px;
+  background: var(--surface-2);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-field);
+}
+.readout-value { font-size: 16px; font-weight: 700; color: var(--ink); }
+
+.hint-warn { color: var(--warning); font-weight: 500; }
+
+/* Блок распределения. */
+.dist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dist-hint { font-size: 12px; font-weight: 500; color: var(--text-2); }
+.dist-counter {
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+}
+.dist-ok { background: #16a34a14; color: var(--success); }
+.dist-bad { background: #d9770614; color: var(--warning); }
+
+.dist-rows { display: flex; flex-direction: column; gap: 8px; }
+.dist-row { display: flex; align-items: center; gap: 8px; }
+/* Плашка типа строки — основа выбора; даём ей достаточный min-width,
+   чтобы влезали длинные названия типа «Ренто на карту физлица (касса)»
+   (ADR-014 п.4). */
+.dist-row > select { flex: 4 1 280px; min-width: 0; }
+.dist-recipient { flex: 3 1 200px; min-width: 0; display: flex; }
+.dist-recipient-ctl { width: 100%; min-width: 0; }
+.dist-norecip {
+  display: flex;
+  align-items: center;
+  padding-left: 4px;
+  color: var(--text-3);
+}
+.dist-sum { flex: 0 0 120px; min-width: 0; }
+
+/* Строка-«Собственник напрямую от гостя» (ADR-014 п.1): авто-
+   подставленный получатель + реквизит «по умолчанию» с копированием. */
+.dist-owner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-field);
+  font-size: 13px;
+  line-height: 1.35;
+}
+.dist-owner.empty { color: var(--text-3); font-style: italic; }
+.dist-owner .owner-name { font-weight: 600; color: var(--ink); }
+.dist-owner .owner-req { color: var(--text-2); word-break: break-all; }
+.dist-owner .owner-req.empty {
+  color: var(--warning); font-style: italic; word-break: normal;
+}
+.dist-owner .owner-req-row {
+  display: flex; align-items: center; gap: 8px; justify-content: space-between;
+}
+.copy-btn {
+  flex: none;
+  padding: 4px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--lime-700);
+  background: var(--surface-1);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+.copy-btn:hover { border-color: var(--lime-500); }
+.dist-x {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  font-size: 18px;
+  color: var(--text-2);
+  background: var(--surface-1);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-field);
+  cursor: pointer;
+}
+.dist-x:hover { color: var(--error); border-color: var(--error); }
+.dist-row-error select,
+.dist-row-error input { border-color: var(--error); }
+
+.dist-add {
+  width: 100%;
+  height: 44px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--lime-700);
+  background: var(--surface-1);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-field);
+  cursor: pointer;
+}
+.dist-add:hover { border-color: var(--lime-500); }
+
+/* Связанные записи под заселением в секции «сегодня» (4.3). */
+.today-children {
+  padding: 0 16px 12px 56px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+}
+.today-toggle {
+  padding: 6px 0;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.today-sub { display: flex; flex-direction: column; gap: 4px; }
+.today-subrow {
+  display: flex;
+  gap: 12px;
+  padding: 6px 10px;
+  font-size: 13px;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.today-sub-type { flex: none; width: 130px; font-weight: 600; }
+.today-sub-desc { flex: 1; min-width: 0; color: var(--text-2); }
+.today-sub-sum { flex: none; font-weight: 700; }
+
+@media (max-width: 640px) {
+  .field-row-2 { flex-direction: column; gap: 12px; }
+  .dist-row { flex-wrap: wrap; }
+  .dist-row > select,
+  .dist-recipient { flex: 1 1 100%; }
+  .dist-sum { flex: 1 1 auto; }
+  .today-children { padding-left: 16px; }
+  .today-sub-type { width: 100px; }
+  .auth-card { padding: 32px; }
+  .app-header { flex-direction: column; gap: 12px; align-items: stretch; padding: 16px; }
+  .header-right { flex-wrap: wrap; justify-content: center; }
+  .app-main { padding: 32px 16px; gap: 32px; }
+  .report-card { flex-direction: column; align-items: stretch; }
+  .modal-card { padding: 24px; }
+  .tc-id, .tc-type, .tc-status { display: none; }
+
+  /* Экран формы на телефоне (ADR-006): крошки и карточка во всю ширину,
+     футер — кнопки в столбик, «Сохранить» сверху, подсказка ⌥Enter скрыта. */
+  .nav-row { padding: 16px 16px 0; gap: 8px; flex-wrap: wrap; }
+  .form-main { padding: 20px 16px 40px; }
+  .op-card { padding: 24px; gap: 24px; }
+  .op-footer { flex-direction: column; align-items: stretch; gap: 12px; }
+  .op-footer-hint { display: none; }
+  .op-footer-actions { flex-direction: column-reverse; }
+  .op-footer-actions .btn-ghost,
+  .op-footer-actions .btn-auto { width: 100%; }
+}

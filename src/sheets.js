@@ -1,0 +1,85 @@
+/*
+ * sheets.js — тонкая обёртка над Google Sheets API v4 (gapi.client).
+ *
+ * Отвечает только за транспорт: инициализацию клиента, установку токена
+ * и batchGet. Никакой бизнес-логики — она в cache.js / app.js.
+ */
+window.Sheets = (() => {
+  const CONFIG = window.RENTO_CONFIG;
+  let initialized = false;
+
+  // Загрузка gapi.client и подключение discovery-документа Sheets API.
+  function init() {
+    return new Promise((resolve, reject) => {
+      gapi.load('client', async () => {
+        try {
+          await gapi.client.init({
+            discoveryDocs: [CONFIG.SHEETS_DISCOVERY_DOC],
+          });
+          initialized = true;
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+  }
+
+  // Установить access_token, полученный от GIS (auth.js).
+  function setToken(accessToken) {
+    gapi.client.setToken({ access_token: accessToken });
+  }
+
+  // Единый batch-запрос к нескольким листам.
+  // ranges — массив имён листов (имя листа = весь лист как range).
+  // Кириллические имена кодируются библиотекой автоматически.
+  async function batchGet(ranges) {
+    const response = await gapi.client.sheets.spreadsheets.values.batchGet({
+      spreadsheetId: CONFIG.SHEETS_ID,
+      ranges,
+    });
+    return response.result.valueRanges || [];
+  }
+
+  // Прочитать значения одного диапазона (имя листа = весь лист).
+  async function getValues(range) {
+    const response = await gapi.client.sheets.spreadsheets.values.get({
+      spreadsheetId: CONFIG.SHEETS_ID,
+      range,
+    });
+    return response.result.values || [];
+  }
+
+  // Дописать строку в конец листа (append-only журналы, §1.2).
+  // USER_ENTERED — числа и даты парсятся как в ручном вводе.
+  async function appendRow(sheetName, rowValues) {
+    await gapi.client.sheets.spreadsheets.values.append({
+      spreadsheetId: CONFIG.SHEETS_ID,
+      range: sheetName,
+      valueInputOption: 'USER_ENTERED',
+      insertDataOption: 'INSERT_ROWS',
+      resource: { values: [rowValues] },
+    });
+  }
+
+  // Перезаписать конкретный диапазон A1 (для отката — смена статуса
+  // в существующей строке журнала, §15).
+  async function updateRange(rangeA1, rowValues) {
+    await gapi.client.sheets.spreadsheets.values.update({
+      spreadsheetId: CONFIG.SHEETS_ID,
+      range: rangeA1,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [rowValues] },
+    });
+  }
+
+  return {
+    init,
+    setToken,
+    batchGet,
+    getValues,
+    appendRow,
+    updateRange,
+    isReady: () => initialized,
+  };
+})();

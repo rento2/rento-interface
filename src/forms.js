@@ -1,0 +1,3024 @@
+/*
+ * forms.js — формы ввода операций.
+ *   Инкремент 2: «+ Уборка» (§8).
+ *   Инкремент 3: «+ Мастер» (§9), «+ Хоз-расход» (§10), «+ Прочее» (§11),
+ *                «+ Batch площадки» (§13), «+ Выплата» (§12),
+ *                поток новой категории на модерации (§14).
+ *
+ * Форма не пишет в Sheets напрямую: собирает и валидирует данные, кладёт
+ * операцию в очередь (Queue.add). Доставку, идемпотентность, генерацию
+ * id_операции и лог берёт на себя общий pipeline (queue.js + journal.js +
+ * generic-отправитель в app.js). Журнал и метаданные операции форма
+ * передаёт служебными ключами `_journal` / `_logType` / `_shortDesc` /
+ * `_managerId` — отправитель один на все формы, ветвлений по типу нет.
+ */
+window.Forms = (() => {
+  const h = UI.h;
+  const CONFIG = window.RENTO_CONFIG;
+
+  // Кассы — фиксированный список (§10.1, §12.1, §13.1).
+  const KASSA = ['р/с Ренто', 'карта физлица'];
+
+  function ymd(d) {
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
+  function today() { return ymd(new Date()); }
+  function tomorrow() {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    return ymd(d);
+  }
+  function nowISO() { return new Date().toISOString(); }
+  function num(v) { return Number(v) || 0; }
+  function money(v) {
+    const n = Number(v);
+    return (isNaN(n) ? v : n.toLocaleString('ru-RU')) + ' ₽';
+  }
+  // Значение справочника трактуется как «да» (см. cache.isActiveValue).
+  function isYes(v) {
+    return ['да', 'yes', 'true', '1', 'активна', 'активен', 'активный']
+      .includes(String(v || '').trim().toLowerCase());
+  }
+
+  // --- черновик формы (§6.3) -------------------------------------------
+  function draftKey(formType) { return 'draft_' + formType; }
+  function loadDraft(formType) {
+    try { return JSON.parse(localStorage.getItem(draftKey(formType))); }
+    catch (_) { return null; }
+  }
+  function saveDraft(formType, data) {
+    localStorage.setItem(draftKey(formType), JSON.stringify(data));
+  }
+  function clearDraft(formType) {
+    localStorage.removeItem(draftKey(formType));
+  }
+
+  // --- поля формы ------------------------------------------------------
+  // Поле: подпись (+ опц. приписка справа) + контрол + опц. хинт + ошибка.
+  // Возвращает узел-обёртку; ._error — место под текст ошибки.
+  function field(label, control, opts) {
+    opts = opts || {};
+    const error = h('div', { class: 'field-error', style: 'display:none' });
+    const labelNode = opts.aside
+      ? h('div', { class: 'field-label-row' },
+          h('span', { class: 'field-label' }, label),
+          h('span', { class: 'field-aside' }, opts.aside))
+      : h('span', { class: 'field-label' }, label);
+    const kids = [labelNode, control];
+    if (opts.hint) kids.push(opts.hint);
+    kids.push(error);
+    const wrap = h('div', { class: 'field' }, ...kids);
+    wrap._error = error;
+    return wrap;
+  }
+  function showError(fieldWrap, message) {
+    fieldWrap._error.textContent = message;
+    fieldWrap._error.style.display = '';
+  }
+  function clearError(fieldWrap) { fieldWrap._error.style.display = 'none'; }
+
+  // --- контролы --------------------------------------------------------
+  function dateInput() {
+    const el = h('input', { class: 'field-input', type: 'date' });
+    el.value = today();
+    return el;
+  }
+  function numberInput() {
+    return h('input',
+      { class: 'field-input', type: 'number', min: '0', step: '1' });
+  }
+  function textInput(placeholder) {
+    return h('input',
+      { class: 'field-input', type: 'text', placeholder: placeholder || '' });
+  }
+  function textarea(placeholder) {
+    return h('textarea', {
+      class: 'field-input field-textarea', rows: '3',
+      placeholder: placeholder || '',
+    });
+  }
+  function selectInput() {
+    return h('select', { class: 'field-input field-select' });
+  }
+  // Наполнить <select> опциями. options: [{ value, text }].
+  function fillSelect(select, options, placeholder) {
+    select.innerHTML = '';
+    if (placeholder !== false) {
+      select.append(h('option', { value: '' }, placeholder || 'Выберите…'));
+    }
+    options.forEach((o) => {
+      select.append(h('option', { value: o.value }, o.text));
+    });
+  }
+
+  // --- источники выпадашек --------------------------------------------
+  // Объекты для выпадашки: { value: id_версии, text: название }.
+  function objectOptions() {
+    return Cache.forDropdown('спр_объекты')
+      .map((o) => ({ value: o['id_версии'], text: o['название_короткое'] }));
+  }
+
+  // Получатели — объединённый список из справочников команды. value —
+  // стабильный id (не версия): по нему считается долг в «+ Выплата».
+  // includeOwners — добавлять ли собственников: в «+ Хоз-расход» их нет
+  // (правка Инкремента 3), в «+ Прочее» — есть (компенсации собственнику).
+  function receiverOptions(includeOwners) {
+    const groups = [
+      ['спр_горничные', 'id_горничной', 'горничная'],
+      ['спр_мастера', 'id_мастера', 'мастер'],
+      ['спр_сотрудники', 'id_сотрудника', 'сотрудник'],
+    ];
+    if (includeOwners) {
+      groups.push(['спр_собственники', 'id_собственника', 'собственник']);
+    }
+    const out = [];
+    groups.forEach(([sheet, idField, tag]) => {
+      Cache.forDropdown(sheet).forEach((r) => {
+        out.push({ value: r[idField], text: r['фио'] + ' · ' + tag });
+      });
+    });
+    return out;
+  }
+
+  // Категории под журнал и тип (§10.2 / §11.2), отсортированы по
+  // порядок_сортировки.
+  function categoryOptions(journalName, type) {
+    return Cache.get('спр_категории')
+      .filter((c) =>
+        String(c['тип']).trim() === type &&
+        String(c['куда_разносится']).trim() === journalName &&
+        isYes(c['активна']) &&
+        String(c['статус_модерации']).trim() === 'подтверждена')
+      .sort((a, b) => num(a['порядок_сортировки']) - num(b['порядок_сортировки']))
+      .map((c) => ({ value: c['id_категории'], text: c['название'] }));
+  }
+
+  // Карта id_версии -> стабильный id (для резолва версионных справочников).
+  function versionMap(sheet, versionField, stableField) {
+    const map = {};
+    Cache.get(sheet).forEach((r) => { map[r[versionField]] = r[stableField]; });
+    return map;
+  }
+
+  // --- сборка формы (общий каркас) -------------------------------------
+  // Собирает <form class=op-form>: черновик-нота, поля, разделитель,
+  // футер с подсказкой и кнопками. submit: блокировка от двойной
+  // отправки (§6.4), валидация, постановка в очередь, выход.
+  // cfg: { formType, opts, fieldNodes, topNote?, draftNote,
+  //        validate(), collect(), queueKey }
+  function composeForm(cfg) {
+    const submitBtn = h('button',
+      { class: 'btn-primary btn-auto', type: 'submit' }, 'Сохранить');
+    const cancelBtn = h('button',
+      { class: 'btn-ghost', type: 'button' }, 'Отмена');
+    // «Отмена» уводит с экрана, но черновик не трогает (§6.3).
+    cancelBtn.addEventListener('click', () => cfg.opts.onExit());
+
+    const footer = h('div', { class: 'op-footer' },
+      h('span', { class: 'op-footer-hint' }, '⌥ Enter — чтобы сохранить'),
+      h('div', { class: 'op-footer-actions' }, cancelBtn, submitBtn));
+
+    const children = [cfg.draftNote];
+    if (cfg.topNote) children.push(cfg.topNote);
+    cfg.fieldNodes.forEach((n) => children.push(n));
+    children.push(h('div', { class: 'op-divider' }), footer);
+    const form = h('form', { class: 'op-form' }, ...children);
+
+    // ⌥ Enter сохраняет (в textarea Enter — перенос строки).
+    form.addEventListener('keydown', (e) => {
+      if (e.altKey && e.key === 'Enter') {
+        e.preventDefault();
+        form.requestSubmit();
+      }
+    });
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      submitBtn.disabled = true;
+      if (!cfg.validate()) { submitBtn.disabled = false; return; }
+      Queue.add(cfg.queueKey, cfg.collect());
+      clearDraft(cfg.formType);
+      // Операция в очереди — уходим на главный экран (app.js перерисует
+      // индикатор и секцию «сегодня»).
+      cfg.opts.onExit();
+    });
+    return { form, submitBtn };
+  }
+
+  // Подключить черновик к собранной форме. persist слушает форму через
+  // делегирование: input/change всплывают, поэтому ловятся и контролы,
+  // добавленные позже (строки распределения §7.4). restore наполняет
+  // форму (restore({}) — сброс к значениям по умолчанию).
+  function setupDraft(formType, form, snapshot, restore, draftNote) {
+    const persist = () => saveDraft(formType, snapshot());
+    form.addEventListener('input', persist);
+    form.addEventListener('change', persist);
+    const draft = loadDraft(formType);
+    if (!draft) return;
+    // Пустой черновик (нет ни одного значимого поля) — молча убираем.
+    // Раньше открытие формы создавало «пустой» черновик из дефолтов;
+    // он лежит в localStorage у уже игравших с формой. Не показываем
+    // плашку «Восстановлен черновик», когда восстанавливать нечего.
+    if (isDraftEmpty(draft)) {
+      clearDraft(formType);
+      return;
+    }
+    restore(draft);
+    const resetBtn = h('button',
+      { class: 'link-btn', type: 'button' }, 'Начать заново');
+    resetBtn.addEventListener('click', () => {
+      clearDraft(formType);
+      restore({});
+      draftNote.style.display = 'none';
+    });
+    draftNote.append(h('span', {}, '↩ Восстановлен черновик. '), resetBtn);
+    draftNote.style.display = '';
+  }
+
+  // Считаем черновик «пустым», если ни одно его поле не несёт значения.
+  // Даты не учитываются (заезд/выезд проставляются сегодня/завтра по
+  // дефолту — это не данные, а заготовка). Строки распределения —
+  // считаются «непустыми», только если в любой из них есть тип,
+  // получатель или сумма.
+  function isDraftEmpty(draft) {
+    if (!draft || typeof draft !== 'object') return true;
+    const skipKeys = new Set(['заезд', 'выезд', 'дата', 'строки']);
+    for (const [key, value] of Object.entries(draft)) {
+      if (skipKeys.has(key)) continue;
+      if (value !== '' && value !== null && value !== undefined) return false;
+    }
+    if (Array.isArray(draft['строки'])) {
+      for (const r of draft['строки']) {
+        if (!r) continue;
+        if ((r['тип'] && r['тип'] !== '') ||
+            (r['получатель'] && r['получатель'] !== '') ||
+            (r['сумма'] && r['сумма'] !== '')) return false;
+      }
+    }
+    return true;
+  }
+
+  // ============================ «+ Уборка» =============================
+  // Открывает полноэкранный экран формы (ADR-006).
+  // opts: { employee, onExit, onRefresh, onLogout }
+  function openУборка(opts) {
+    const employee = opts.employee;
+    const formType = 'уборка';
+
+    const cleaners = Cache.forDropdown('спр_горничные');
+    const objects = Cache.forDropdown('спр_объекты');
+    // Ставки — все версии: нужная определяется по дате уборки (§8.2).
+    const rates = Cache.get('спр_ставки_уборок');
+
+    const objectsByVersion = {};
+    objects.forEach((o) => { objectsByVersion[o['id_версии']] = o; });
+
+    const dateEl = h('input', { class: 'field-input', type: 'date' });
+    dateEl.value = today();
+
+    const cleanerSelect = h('select', { class: 'field-input field-select' },
+      h('option', { value: '' }, 'Выберите...'));
+    cleaners.forEach((c) => {
+      cleanerSelect.append(h('option', { value: c['id_версии'] }, c['фио']));
+    });
+
+    const objectSelect = h('select', { class: 'field-input field-select' },
+      h('option', { value: '' }, 'Выберите...'));
+    objects.forEach((o) => {
+      objectSelect.append(
+        h('option', { value: o['id_версии'] }, o['название_короткое']));
+    });
+
+    const typeSelect = h('select', { class: 'field-input field-select' },
+      h('option', { value: '' }, 'Выберите...'),
+      h('option', { value: 'плановая' }, 'плановая'),
+      h('option', { value: 'генеральная' }, 'генеральная'));
+
+    const sumInput = numberInput();
+    const sumHint = h('div', { class: 'field-hint' });
+    const commentInput = textInput('Комментарий');
+
+    const fDate = field('Дата уборки', dateEl);
+    const fCleaner = field('Горничная', cleanerSelect);
+    const fObject = field('Объект', objectSelect);
+    const fType = field('Тип уборки', typeSelect);
+    const fSum = field('Сумма ₽',
+      h('div', { class: 'field-stack' }, sumInput, sumHint));
+    const fComment = field('Комментарий', commentInput);
+
+    let currentDefault = null;
+
+    function recomputeDefault() {
+      const obj = objectsByVersion[objectSelect.value];
+      const type = typeSelect.value;
+      const date = dateEl.value;
+      if (!obj || !type || !date) {
+        currentDefault = null;
+        sumHint.textContent = '';
+        return;
+      }
+      const idObj = obj['id_объекта'];
+      const matching = rates.filter((r) => {
+        if (r['id_объекта'] !== idObj) return false;
+        if (r['тип_уборки'] !== type) return false;
+        const from = String(r['действует_с'] || '');
+        const to = String(r['действует_по'] || '').trim();
+        return from <= date && (!to || date <= to);
+      });
+      if (!matching.length) {
+        currentDefault = null;
+        sumHint.textContent = 'ставка не найдена — впишите сумму вручную';
+        return;
+      }
+      matching.sort((a, b) =>
+        String(b['действует_с']).localeCompare(String(a['действует_с'])));
+      currentDefault = Number(matching[0]['сумма_₽']);
+      sumInput.value = currentDefault;
+      sumHint.textContent = 'дефолт из ставок: ' + currentDefault + ' ₽';
+    }
+
+    [dateEl, cleanerSelect, objectSelect, typeSelect].forEach((el) => {
+      el.addEventListener('change', recomputeDefault);
+    });
+
+    const draftNote = h('div', { class: 'draft-note', style: 'display:none' });
+
+    function snapshot() {
+      return {
+        дата: dateEl.value, id_горничной: cleanerSelect.value,
+        id_объекта: objectSelect.value, тип: typeSelect.value,
+        сумма: sumInput.value, комментарий: commentInput.value,
+      };
+    }
+    function restore(d) {
+      dateEl.value = d.дата || today();
+      cleanerSelect.value = d.id_горничной || '';
+      objectSelect.value = d.id_объекта || '';
+      typeSelect.value = d.тип || '';
+      commentInput.value = d.комментарий || '';
+      sumInput.value = '';
+      recomputeDefault();              // выставит дефолт, если хватает полей
+      if (d.сумма) sumInput.value = d.сумма; // ручной ввод важнее дефолта
+    }
+
+    function validate() {
+      [fDate, fCleaner, fObject, fType, fSum, fComment].forEach(clearError);
+      let ok = true;
+      if (!dateEl.value) { showError(fDate, 'Укажите дату'); ok = false; }
+      if (!cleanerSelect.value) { showError(fCleaner, 'Выберите горничную'); ok = false; }
+      if (!objectSelect.value) { showError(fObject, 'Выберите объект'); ok = false; }
+      if (!typeSelect.value) { showError(fType, 'Выберите тип уборки'); ok = false; }
+      const sum = Number(sumInput.value);
+      if (!sumInput.value || !(sum > 0)) {
+        showError(fSum, 'Сумма должна быть больше 0'); ok = false;
+      }
+      // Перебитая сумма — комментарий обязателен (§8.3, грабли #3).
+      const overridden = currentDefault != null && sum !== currentDefault;
+      if (overridden && !commentInput.value.trim()) {
+        showError(fComment, 'Сумма отличается от ставки — нужен комментарий');
+        ok = false;
+      }
+      return ok;
+    }
+
+    function collect() {
+      const obj = objectsByVersion[objectSelect.value];
+      const cleaner = cleaners.find((c) => c['id_версии'] === cleanerSelect.value);
+      const sum = Number(sumInput.value);
+      const описание = 'Уборка ' + (obj ? obj['название_короткое'] : '') +
+        ', ' + (cleaner ? cleaner['фио'] : '') + ', ' + sum + ' ₽';
+      return {
+        // `дата_внесения` — момент постановки в очередь (ADR-007).
+        'дата_внесения': nowISO(),
+        'id_менеджера': employee['id_сотрудника'], // стабильный ID, ADR-005
+        'дата_уборки': dateEl.value,
+        'id_горничной': cleanerSelect.value,       // id_версии (грабли #1)
+        'id_объекта_версии': objectSelect.value,
+        'тип_уборки': typeSelect.value,
+        'сумма_₽': sum,
+        'комментарий': commentInput.value.trim(),
+        'статус': 'активна',
+        'отменена_кем': '', 'отменена_когда': '', 'id_исходной_операции': '',
+        '_journal': CONFIG.JOURNAL_УБОРКИ,
+        '_logType': 'уборка',
+        '_shortDesc': описание,
+        '_managerId': employee['id_сотрудника'],
+      };
+    }
+
+    const built = composeForm({
+      formType, opts, draftNote, queueKey: 'уборка', validate, collect,
+      fieldNodes: [fDate, fCleaner, fObject, fType, fSum, fComment],
+    });
+    setupDraft(formType, built.form, snapshot, restore, draftNote);
+
+    return Screens.formScreen({
+      employee, title: '+ Уборка',
+      subtitle: 'Внести операцию уборки. Сумма подставится автоматически ' +
+        'по ставке объекта.',
+      content: built.form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
+  // ============================ «+ Мастер» =============================
+  // §9. Две роли записи (выход / материалы) и опциональный объект.
+  function openМастер(opts) {
+    const employee = opts.employee;
+    const formType = 'мастер';
+
+    const masters = Cache.forDropdown('спр_мастера');
+    const mastersByVersion = {};
+    masters.forEach((m) => { mastersByVersion[m['id_версии']] = m; });
+
+    const dateEl = dateInput();
+    const masterSelect = selectInput();
+    fillSelect(masterSelect, masters.map((m) => ({
+      value: m['id_версии'],
+      text: m['фио'] + (m['специализация'] ? ' — ' + m['специализация'] : ''),
+    })));
+    const typeSelect = selectInput();
+    fillSelect(typeSelect, [
+      { value: 'выход', text: 'выход' },
+      { value: 'материалы', text: 'материалы' },
+    ]);
+    // Объект: первый пункт — «без объекта» (грабли 3.1), пустое значение.
+    const objectSelect = selectInput();
+    fillSelect(objectSelect, objectOptions(), '—— без объекта ——');
+    const descInput = textInput('Что делал мастер / что куплено');
+    const sumInput = numberInput();
+    const sumHint = h('div', { class: 'field-hint' });
+    const commentInput = textarea('Например: менял смеситель, гарантия 6 мес');
+
+    const fDate = field('Дата', dateEl);
+    const fMaster = field('Мастер', masterSelect);
+    const fType = field('Тип записи', typeSelect);
+    const fObject = field('Объект', objectSelect,
+      { aside: 'обязателен для выхода' });
+    const fDesc = field('Описание', descInput,
+      { aside: 'обязательно для материалов' });
+    const fSum = field('Сумма ₽',
+      h('div', { class: 'field-stack' }, sumInput, sumHint));
+    const fComment = field('Комментарий', commentInput, { aside: 'необязательно' });
+
+    // Сумма по выходу — дефолт из ставки мастера (§9.1), перебивается.
+    function recomputeSum() {
+      const m = mastersByVersion[masterSelect.value];
+      if (typeSelect.value === 'выход' && m) {
+        const def = num(m['ставка_дефолт_₽']);
+        sumInput.value = def || '';
+        sumHint.textContent = def
+          ? 'ставка мастера: ' + def + ' ₽ — можно перебить'
+          : 'у мастера нет ставки по умолчанию — впишите сумму';
+      } else {
+        sumHint.textContent = typeSelect.value === 'материалы'
+          ? 'сумма закупки — впишите вручную' : '';
+      }
+    }
+    masterSelect.addEventListener('change', recomputeSum);
+    typeSelect.addEventListener('change', recomputeSum);
+
+    const draftNote = h('div', { class: 'draft-note', style: 'display:none' });
+
+    function snapshot() {
+      return {
+        дата: dateEl.value, id_мастера: masterSelect.value,
+        тип: typeSelect.value, id_объекта: objectSelect.value,
+        описание: descInput.value, сумма: sumInput.value,
+        комментарий: commentInput.value,
+      };
+    }
+    function restore(d) {
+      dateEl.value = d.дата || today();
+      masterSelect.value = d.id_мастера || '';
+      typeSelect.value = d.тип || '';
+      objectSelect.value = d.id_объекта || '';
+      descInput.value = d.описание || '';
+      commentInput.value = d.комментарий || '';
+      sumInput.value = '';
+      recomputeSum();                  // дефолт по ставке, если тип = выход
+      if (d.сумма) sumInput.value = d.сумма; // ручной ввод важнее дефолта
+    }
+
+    function validate() {
+      [fDate, fMaster, fType, fObject, fDesc, fSum].forEach(clearError);
+      let ok = true;
+      if (!dateEl.value) { showError(fDate, 'Укажите дату'); ok = false; }
+      if (!masterSelect.value) { showError(fMaster, 'Выберите мастера'); ok = false; }
+      if (!typeSelect.value) { showError(fType, 'Выберите тип записи'); ok = false; }
+      if (typeSelect.value === 'выход' && !objectSelect.value) {
+        showError(fObject, 'Для выхода объект обязателен'); ok = false;
+      }
+      if (typeSelect.value === 'материалы' && !descInput.value.trim()) {
+        showError(fDesc, 'Для материалов опишите, что куплено'); ok = false;
+      }
+      if (!(num(sumInput.value) > 0)) {
+        showError(fSum, 'Сумма должна быть больше 0'); ok = false;
+      }
+      return ok;
+    }
+
+    function collect() {
+      const m = mastersByVersion[masterSelect.value];
+      const sum = num(sumInput.value);
+      const описание = 'Мастер ' + (m ? m['фио'] : '') + ', ' +
+        typeSelect.value + ', ' + sum + ' ₽';
+      return {
+        'дата_внесения': nowISO(),
+        'id_менеджера': employee['id_сотрудника'],
+        'дата': dateEl.value,
+        'id_мастера': masterSelect.value,             // id_версии (§9.3)
+        'id_объекта_версии': objectSelect.value,       // '' = без объекта
+        'тип_записи': typeSelect.value,
+        'описание': descInput.value.trim(),
+        'сумма_₽': sum,
+        'комментарий': commentInput.value.trim(),
+        'статус': 'активна',
+        'отменена_кем': '', 'отменена_когда': '', 'id_исходной_операции': '',
+        '_journal': CONFIG.JOURNAL_МАСТЕР,
+        '_logType': 'мастер',
+        '_shortDesc': описание,
+        '_managerId': employee['id_сотрудника'],
+      };
+    }
+
+    const built = composeForm({
+      formType, opts, draftNote, queueKey: 'мастер', validate, collect,
+      fieldNodes: [fDate, fMaster, fType, fObject, fDesc, fSum, fComment],
+    });
+    setupDraft(formType, built.form, snapshot, restore, draftNote);
+
+    return Screens.formScreen({
+      employee, title: '+ Мастер',
+      subtitle: 'Выезд мастера или закупка материалов. Сумма по выезду — ' +
+        'из ставки мастера, перебивается.',
+      content: built.form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
+  // --- поле «Категория»: выпадашка + кнопка предложить (§10, §14) ------
+  // Возвращает { node, select, setOptions, addPending }.
+  // onPropose(addPending) — вызывается по кнопке «+ предложить категорию».
+  function categoryControl(onPropose) {
+    const select = h('select', { class: 'field-input field-select' });
+
+    function setOptions(list) {
+      select.innerHTML = '';
+      select.append(h('option', { value: '' }, 'Выберите категорию…'));
+      list.forEach((o) => {
+        select.append(h('option', { value: o.value }, o.text));
+      });
+    }
+    // Категория на модерации (§14): добавить PENDING-пункт и выбрать.
+    function addPending(name) {
+      const value = 'PENDING:' + name;
+      select.append(h('option', { value }, name + ' (на модерации)'));
+      select.value = value;
+    }
+
+    const proposeBtn = h('button',
+      { class: 'link-btn propose-link', type: 'button' },
+      '+ предложить новую категорию');
+    proposeBtn.addEventListener('click', () => onPropose(addPending));
+
+    const node = h('div', { class: 'field-stack' }, select, proposeBtn);
+    return { node, select, setOptions, addPending };
+  }
+
+  // ========================== «+ Хоз-расход» ===========================
+  // §10. Расход с привязкой к объекту.
+  function openХозРасход(opts) {
+    const employee = opts.employee;
+    const formType = 'хоз_расход';
+
+    const dateEl = dateInput();
+    const objectSelect = selectInput();
+    fillSelect(objectSelect, objectOptions());
+
+    const cat = categoryControl((addPending) => {
+      openCategoryModal({
+        employee, contextType: 'расход',
+        onProposed: (name) => addPending(name),
+      });
+    });
+    cat.setOptions(categoryOptions(CONFIG.JOURNAL_ХОЗ_РАСХОДЫ, 'расход'));
+
+    const descInput = textInput('Описание расхода');
+    const sumInput = numberInput();
+    const receiverSelect = selectInput();
+    // Получатель хоз-расхода — горничные/мастера/сотрудники, без
+    // собственников (правка Инкремента 3): это компенсация члену команды.
+    fillSelect(receiverSelect, receiverOptions(false), '— не выбран —');
+    const kassaSelect = selectInput();
+    fillSelect(kassaSelect, KASSA.map((k) => ({ value: k, text: k })));
+    const commentInput = textarea('Комментарий');
+
+    const fDate = field('Дата', dateEl);
+    const fObject = field('Объект', objectSelect);
+    const fCat = field('Категория', cat.node);
+    const fDesc = field('Описание', descInput, { aside: 'необязательно' });
+    const fSum = field('Сумма ₽', sumInput);
+    const fReceiver = field('Получатель', receiverSelect,
+      { aside: 'необязательно' });
+    const fKassa = field('Касса', kassaSelect);
+    const fComment = field('Комментарий', commentInput, { aside: 'необязательно' });
+
+    const draftNote = h('div', { class: 'draft-note', style: 'display:none' });
+
+    function snapshot() {
+      return {
+        дата: dateEl.value, id_объекта: objectSelect.value,
+        id_категории: cat.select.value, описание: descInput.value,
+        сумма: sumInput.value, id_получателя: receiverSelect.value,
+        касса: kassaSelect.value, комментарий: commentInput.value,
+      };
+    }
+    function restore(d) {
+      dateEl.value = d.дата || today();
+      objectSelect.value = d.id_объекта || '';
+      // PENDING-категория из черновика — вернуть пунктом списка.
+      if (d.id_категории && String(d.id_категории).startsWith('PENDING:')) {
+        cat.addPending(String(d.id_категории).slice('PENDING:'.length));
+      } else {
+        cat.select.value = d.id_категории || '';
+      }
+      descInput.value = d.описание || '';
+      sumInput.value = d.сумма || '';
+      receiverSelect.value = d.id_получателя || '';
+      kassaSelect.value = d.касса || '';
+      commentInput.value = d.комментарий || '';
+    }
+
+    function validate() {
+      [fDate, fObject, fCat, fSum, fKassa].forEach(clearError);
+      let ok = true;
+      if (!dateEl.value) { showError(fDate, 'Укажите дату'); ok = false; }
+      if (!objectSelect.value) { showError(fObject, 'Выберите объект'); ok = false; }
+      if (!cat.select.value) { showError(fCat, 'Выберите категорию'); ok = false; }
+      if (!(num(sumInput.value) > 0)) {
+        showError(fSum, 'Сумма должна быть больше 0'); ok = false;
+      }
+      if (!kassaSelect.value) { showError(fKassa, 'Выберите кассу'); ok = false; }
+      return ok;
+    }
+
+    function collect() {
+      const sum = num(sumInput.value);
+      const pending = String(cat.select.value).startsWith('PENDING:');
+      let comment = commentInput.value.trim();
+      // Категория на модерации — пометка для основателя (§14.2).
+      if (pending) {
+        comment = comment ? 'нужна категоризация. ' + comment
+          : 'нужна категоризация';
+      }
+      const описание = 'Хоз-расход ' +
+        Operations.categoryName(cat.select.value) + ', ' + sum + ' ₽';
+      return {
+        'дата_внесения': nowISO(),
+        'id_менеджера': employee['id_сотрудника'],
+        'дата': dateEl.value,
+        'id_объекта_версии': objectSelect.value,
+        'id_категории': cat.select.value,
+        'описание': descInput.value.trim(),
+        'сумма_₽': sum,
+        'id_получателя': receiverSelect.value,
+        'касса': kassaSelect.value,
+        'комментарий': comment,
+        'статус': 'активна',
+        'отменена_кем': '', 'отменена_когда': '', 'id_исходной_операции': '',
+        '_journal': CONFIG.JOURNAL_ХОЗ_РАСХОДЫ,
+        '_logType': 'хоз_расход',
+        '_shortDesc': описание,
+        '_managerId': employee['id_сотрудника'],
+      };
+    }
+
+    const built = composeForm({
+      formType, opts, draftNote, queueKey: 'хоз_расход', validate, collect,
+      fieldNodes: [fDate, fObject, fCat, fDesc, fSum, fReceiver, fKassa, fComment],
+    });
+    setupDraft(formType, built.form, snapshot, restore, draftNote);
+
+    return Screens.formScreen({
+      employee, title: '+ Хоз-расход',
+      subtitle: 'Расход с привязкой к объекту.',
+      content: built.form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
+  // ============================ «+ Прочее» =============================
+  // §11. Прочие доходы и расходы без привязки к объекту.
+  function openПрочее(opts) {
+    const employee = opts.employee;
+    const formType = 'прочее';
+
+    const typeSelect = selectInput();
+    fillSelect(typeSelect, [
+      { value: 'расход', text: 'расход' },
+      { value: 'доход', text: 'доход' },
+    ]);
+    const dateEl = dateInput();
+    const descInput = textInput('Описание');
+    const sumInput = numberInput();
+    const receiverSelect = selectInput();
+    // В «+ Прочее» получатель/плательщик может быть и собственником
+    // (например, компенсация от собственника) — список со собственниками.
+    fillSelect(receiverSelect, receiverOptions(true), '— не выбран —');
+    const kassaSelect = selectInput();
+    fillSelect(kassaSelect, KASSA.map((k) => ({ value: k, text: k })), '— не выбрана —');
+    const commentInput = textarea('Комментарий');
+
+    const cat = categoryControl((addPending) => {
+      openCategoryModal({
+        employee,
+        // Тип категории определяется текущим переключателем (§14.1).
+        contextType: typeSelect.value === 'доход' ? 'доход' : 'расход',
+        onProposed: (name) => addPending(name),
+      });
+    });
+
+    const fType = field('Тип', typeSelect);
+    const fDate = field('Дата', dateEl);
+    const fCat = field('Категория', cat.node);
+    const fDesc = field('Описание', descInput, { aside: 'необязательно' });
+    const fSum = field('Сумма ₽', sumInput);
+    const fReceiver = field('Получатель / плательщик', receiverSelect,
+      { aside: 'необязательно' });
+    const fKassa = field('Касса', kassaSelect, { aside: 'необязательно' });
+    const fComment = field('Комментарий', commentInput, { aside: 'необязательно' });
+
+    function journalFor() {
+      return typeSelect.value === 'доход'
+        ? CONFIG.JOURNAL_ПРОЧИЕ_ДОХОДЫ : CONFIG.JOURNAL_ПРОЧИЕ_РАСХОДЫ;
+    }
+    // Переключатель типа меняет фильтр категорий (§11.2) и подпись поля
+    // получателя/плательщика.
+    function syncType() {
+      const type = typeSelect.value;
+      if (type) cat.setOptions(categoryOptions(journalFor(), type));
+      else cat.setOptions([]);
+      fReceiver.querySelector('.field-label').textContent =
+        type === 'доход' ? 'Плательщик' : 'Получатель';
+    }
+    typeSelect.addEventListener('change', syncType);
+    syncType();
+
+    const draftNote = h('div', { class: 'draft-note', style: 'display:none' });
+
+    function snapshot() {
+      return {
+        тип: typeSelect.value, дата: dateEl.value,
+        id_категории: cat.select.value, описание: descInput.value,
+        сумма: sumInput.value, получатель: receiverSelect.value,
+        касса: kassaSelect.value, комментарий: commentInput.value,
+      };
+    }
+    function restore(d) {
+      typeSelect.value = d.тип || '';
+      syncType(); // перестроить категории под тип ДО установки значения
+      dateEl.value = d.дата || today();
+      if (d.id_категории && String(d.id_категории).startsWith('PENDING:')) {
+        cat.addPending(String(d.id_категории).slice('PENDING:'.length));
+      } else {
+        cat.select.value = d.id_категории || '';
+      }
+      descInput.value = d.описание || '';
+      sumInput.value = d.сумма || '';
+      receiverSelect.value = d.получатель || '';
+      kassaSelect.value = d.касса || '';
+      commentInput.value = d.комментарий || '';
+    }
+
+    function validate() {
+      [fType, fDate, fCat, fSum].forEach(clearError);
+      let ok = true;
+      if (!typeSelect.value) { showError(fType, 'Выберите тип'); ok = false; }
+      if (!dateEl.value) { showError(fDate, 'Укажите дату'); ok = false; }
+      if (!cat.select.value) { showError(fCat, 'Выберите категорию'); ok = false; }
+      if (!(num(sumInput.value) > 0)) {
+        showError(fSum, 'Сумма должна быть больше 0'); ok = false;
+      }
+      return ok;
+    }
+
+    function collect() {
+      const type = typeSelect.value;
+      const sum = num(sumInput.value);
+      const pending = String(cat.select.value).startsWith('PENDING:');
+      let comment = commentInput.value.trim();
+      if (pending) {
+        comment = comment ? 'нужна категоризация. ' + comment
+          : 'нужна категоризация';
+      }
+      const описание = 'Прочее (' + type + ') ' +
+        Operations.categoryName(cat.select.value) + ', ' + sum + ' ₽';
+      // Расход — id_получателя, доход — id_плательщика (§4.20 / §4.21).
+      const data = {
+        'дата_внесения': nowISO(),
+        'id_менеджера': employee['id_сотрудника'],
+        'дата': dateEl.value,
+        'id_категории': cat.select.value,
+        'описание': descInput.value.trim(),
+        'сумма_₽': sum,
+        'касса': kassaSelect.value,
+        'комментарий': comment,
+        'статус': 'активна',
+        'отменена_кем': '', 'отменена_когда': '', 'id_исходной_операции': '',
+        '_journal': journalFor(),
+        '_logType': type === 'доход' ? 'прочий_доход' : 'прочий_расход',
+        '_shortDesc': описание,
+        '_managerId': employee['id_сотрудника'],
+      };
+      if (type === 'доход') data['id_плательщика'] = receiverSelect.value;
+      else data['id_получателя'] = receiverSelect.value;
+      return data;
+    }
+
+    const built = composeForm({
+      formType, opts, draftNote, queueKey: 'прочее', validate, collect,
+      fieldNodes: [fType, fDate, fCat, fDesc, fSum, fReceiver, fKassa, fComment],
+    });
+    setupDraft(formType, built.form, snapshot, restore, draftNote);
+
+    return Screens.formScreen({
+      employee, title: '+ Прочее',
+      subtitle: 'Прочий доход или расход без привязки к объекту.',
+      content: built.form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
+  // ======================= «+ Batch площадки» ==========================
+  // §13. Разноска batch-выплаты от Авито / Яндекс. Только основатель.
+  function openBatch(opts) {
+    const employee = opts.employee;
+    const formType = 'batch';
+
+    const dateEl = dateInput();
+    const platformSelect = selectInput();
+    fillSelect(platformSelect, [
+      { value: 'авито', text: 'Авито' },
+      { value: 'яндекс', text: 'Яндекс' },
+    ]);
+    const sumInput = numberInput();
+    const fromEl = h('input', { class: 'field-input', type: 'date' });
+    const toEl = h('input', { class: 'field-input', type: 'date' });
+    const kassaSelect = selectInput();
+    fillSelect(kassaSelect, KASSA.map((k) => ({ value: k, text: k })));
+    const commentInput = textarea('Комментарий');
+
+    const fDate = field('Дата получения', dateEl);
+    const fPlatform = field('Площадка', platformSelect);
+    const fSum = field('Сумма ₽', sumInput);
+    const fPeriod = field('Период покрытия',
+      h('div', { class: 'field-row-2' },
+        h('div', { class: 'field-stack' },
+          h('span', { class: 'field-sub' }, 'с'), fromEl),
+        h('div', { class: 'field-stack' },
+          h('span', { class: 'field-sub' }, 'по'), toEl)),
+      { aside: 'необязательно' });
+    const fKassa = field('Касса', kassaSelect);
+    const fComment = field('Комментарий', commentInput, { aside: 'необязательно' });
+
+    const draftNote = h('div', { class: 'draft-note', style: 'display:none' });
+
+    function snapshot() {
+      return {
+        дата: dateEl.value, площадка: platformSelect.value,
+        сумма: sumInput.value, с: fromEl.value, по: toEl.value,
+        касса: kassaSelect.value, комментарий: commentInput.value,
+      };
+    }
+    function restore(d) {
+      dateEl.value = d.дата || today();
+      platformSelect.value = d.площадка || '';
+      sumInput.value = d.сумма || '';
+      fromEl.value = d.с || '';
+      toEl.value = d.по || '';
+      kassaSelect.value = d.касса || '';
+      commentInput.value = d.комментарий || '';
+    }
+
+    function validate() {
+      [fDate, fPlatform, fSum, fKassa].forEach(clearError);
+      let ok = true;
+      if (!dateEl.value) { showError(fDate, 'Укажите дату получения'); ok = false; }
+      if (!platformSelect.value) { showError(fPlatform, 'Выберите площадку'); ok = false; }
+      if (!(num(sumInput.value) > 0)) {
+        showError(fSum, 'Сумма должна быть больше 0'); ok = false;
+      }
+      if (!kassaSelect.value) { showError(fKassa, 'Выберите кассу'); ok = false; }
+      return ok;
+    }
+
+    function collect() {
+      const sum = num(sumInput.value);
+      let comment = commentInput.value.trim();
+      // Период покрытия — в комментарий (§13.2).
+      if (fromEl.value || toEl.value) {
+        const period = 'период: с ' + (fromEl.value || '—') +
+          ' по ' + (toEl.value || '—');
+        comment = comment ? period + '. ' + comment : period;
+      }
+      const платформа = platformSelect.value === 'яндекс' ? 'Яндекс' : 'Авито';
+      return {
+        'дата_внесения': nowISO(),
+        'id_менеджера': employee['id_сотрудника'],
+        'тип_записи': 'batch_площадки',
+        'дата_операции': dateEl.value,
+        'id_объекта_версии': '',
+        'дата_с': '', 'дата_по': '',
+        'канал_брони': platformSelect.value,        // авито / яндекс
+        'сумма_бронирования_₽': sum,
+        'комиссия_площадки_₽': '', 'площадка_должна_₽': '',
+        'касса': kassaSelect.value,
+        'комментарий': comment,
+        'статус': 'активна',
+        'отменена_кем': '', 'отменена_когда': '', 'id_исходной_операции': '',
+        '_journal': CONFIG.JOURNAL_ПОСТУПЛЕНИЯ,
+        '_logType': 'batch_площадки',
+        '_shortDesc': 'Batch ' + платформа + ', ' + sum + ' ₽',
+        '_managerId': employee['id_сотрудника'],
+      };
+    }
+
+    const built = composeForm({
+      formType, opts, draftNote, queueKey: 'batch_площадки', validate, collect,
+      fieldNodes: [fDate, fPlatform, fSum, fPeriod, fKassa, fComment],
+    });
+    setupDraft(formType, built.form, snapshot, restore, draftNote);
+
+    return Screens.formScreen({
+      employee, title: '+ Batch площадки',
+      subtitle: 'Разноска batch-выплаты от Авито или Яндекс.',
+      content: built.form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
+  // ============================ «+ Выплата» ============================
+  // §12. Закрытие обязательств перед получателями. Только основатель.
+  function openВыплата(opts) {
+    const employee = opts.employee;
+    const formType = 'выплата';
+
+    // Источник получателей по типу: [справочник, поле id].
+    const RECEIVER_SRC = {
+      'горничная': ['спр_горничные', 'id_горничной'],
+      'мастер': ['спр_мастера', 'id_мастера'],
+      'сотрудник': ['спр_сотрудники', 'id_сотрудника'],
+      'собственник': ['спр_собственники', 'id_собственника'],
+      'кредитор': ['спр_кредиторы', 'id_кредитора'],
+    };
+    // Реквизиты по типу: [справочник реквизитов, поле id владельца].
+    const REQ_SRC = {
+      'горничная': ['спр_реквизиты_горничных', 'id_горничной'],
+      'мастер': ['спр_реквизиты_мастеров', 'id_мастера'],
+      'сотрудник': ['спр_реквизиты_сотрудников', 'id_сотрудника'],
+      'собственник': ['спр_реквизиты_собственников', 'id_собственника'],
+    };
+
+    const dateEl = dateInput();
+    const typeSelect = selectInput();
+    fillSelect(typeSelect, ['горничная', 'мастер', 'сотрудник',
+      'собственник', 'кредитор', 'прочее'].map((t) => ({ value: t, text: t })));
+    // Получатель: для известных типов — выпадашка, для «прочее» — ввод.
+    // Оба контрола живут в DOM всегда (черновик вешается на них один
+    // раз), переключается только видимость.
+    const receiverSelect = selectInput();
+    const receiverText = textInput('ФИО или название получателя');
+    receiverText.style.display = 'none';
+    const reqSelect = selectInput();
+    // ADR-016: для выплаты собственнику нужно знать, по какому из его
+    // объектов идёт платёж (у собственника может быть несколько объектов
+    // — сальдо считается по каждому отдельно). Для прочих типов поле
+    // скрыто и в данные не пишется.
+    const objectSelect = selectInput();
+    const debtHint = h('div', { class: 'field-hint debt-hint' });
+    const commentInput = textarea('Комментарий');
+    const purposeInput = textInput('За что выплата');
+    const sumInput = numberInput();
+    const kassaSelect = selectInput();
+    fillSelect(kassaSelect, KASSA.map((k) => ({ value: k, text: k })));
+
+    const fDate = field('Дата выплаты', dateEl);
+    const fType = field('Тип получателя', typeSelect);
+    const fReceiver = field('Получатель',
+      h('div', { class: 'field-stack' }, receiverSelect, receiverText, debtHint));
+    const fObject = field('Объект', objectSelect,
+      { aside: 'по какому объекту платим' });
+    fObject.style.display = 'none';                  // показывается только для собственника
+    const fReq = field('Реквизиты', reqSelect);
+    const fSum = field('Сумма ₽', sumInput);
+    const fPurpose = field('Назначение', purposeInput);
+    const fKassa = field('Касса', kassaSelect);
+    const fComment = field('Комментарий', commentInput, { aside: 'необязательно' });
+
+    // --- журналы для подсчёта долга (§12.4) — лениво, один раз --------
+    let debtJournals = null;
+    let debtLoading = null;
+    function ensureDebtJournals() {
+      if (debtJournals) return Promise.resolve(debtJournals);
+      if (debtLoading) return debtLoading;
+      debtLoading = Journal.readMany([
+        CONFIG.JOURNAL_УБОРКИ, CONFIG.JOURNAL_МАСТЕР, CONFIG.JOURNAL_ВЫПЛАТЫ,
+      ]).then((res) => { debtJournals = res; return res; });
+      return debtLoading;
+    }
+
+    // Сумма активных строк журнала по предикату.
+    function sumActive(records, matchFn, sumField) {
+      let total = 0;
+      records.forEach((r) => {
+        if (String(r.data['статус']).trim() === 'отменена') return;
+        if (matchFn(r.data)) total += num(r.data[sumField]);
+      });
+      return total;
+    }
+
+    // Долг = начислено − выплачено (упрощённо, §12.4 / грабли 3.5).
+    // Возвращает число либо null (данных недостаточно).
+    function computeDebt(type, recipientId, journals) {
+      if (!recipientId) return null;
+      const paid = sumActive(journals[CONFIG.JOURNAL_ВЫПЛАТЫ].records,
+        (d) => d['тип_получателя'] === type &&
+          d['id_получателя'] === recipientId &&
+          String(d['источник']).trim() === 'со счёта Ренто', 'сумма_₽');
+
+      if (type === 'горничная') {
+        const ver = versionMap('спр_горничные', 'id_версии', 'id_горничной');
+        const accrued = sumActive(journals[CONFIG.JOURNAL_УБОРКИ].records,
+          (d) => (ver[d['id_горничной']] || d['id_горничной']) === recipientId,
+          'сумма_₽');
+        return accrued - paid;
+      }
+      if (type === 'мастер') {
+        const ver = versionMap('спр_мастера', 'id_версии', 'id_мастера');
+        const accrued = sumActive(journals[CONFIG.JOURNAL_МАСТЕР].records,
+          (d) => (ver[d['id_мастера']] || d['id_мастера']) === recipientId,
+          'сумма_₽');
+        return accrued - paid;
+      }
+      // Сотрудник / собственник / кредитор: журналов начислений в
+      // Инкременте 3 ещё нет — честно показываем «нет данных» (§12.4).
+      return null;
+    }
+
+    function renderDebt() {
+      const type = typeSelect.value;
+      const id = currentReceiverId();
+      if (!type || !id || type === 'прочее') { debtHint.textContent = ''; return; }
+      debtHint.textContent = 'Считаем текущий долг…';
+      ensureDebtJournals().then((journals) => {
+        // Получатель мог смениться, пока шла загрузка.
+        if (typeSelect.value !== type || currentReceiverId() !== id) return;
+        const debt = computeDebt(type, id, journals);
+        if (debt == null) {
+          debtHint.textContent = 'Текущий долг: нет данных';
+        } else if (debt > 0) {
+          debtHint.textContent = 'Текущий долг перед получателем: ' + money(debt);
+        } else if (debt < 0) {
+          debtHint.textContent = 'Переплата получателю: ' + money(-debt);
+        } else {
+          debtHint.textContent = 'Долга перед получателем нет';
+        }
+      }).catch(() => { debtHint.textContent = 'Текущий долг: нет данных'; });
+    }
+
+    // Текущий id получателя (из выпадашки или поля ввода).
+    function currentReceiverId() {
+      return typeSelect.value === 'прочее'
+        ? receiverText.value.trim() : receiverSelect.value;
+    }
+
+    // Перестроить выпадашку реквизитов под выбранного получателя (§12.3).
+    function rebuildReqs() {
+      const type = typeSelect.value;
+      const id = receiverSelect.value;
+      const src = REQ_SRC[type];
+      if (!src || !id) {
+        fillSelect(reqSelect, []);
+        // У кредитора/прочего реквизитов в системе нет — скрываем поле.
+        fReq.style.display = (type && !src) ? 'none' : '';
+        return;
+      }
+      fReq.style.display = '';
+      const rows = Cache.get(src[0])
+        .filter((r) => r[src[1]] === id && isYes(r['активен']));
+      fillSelect(reqSelect, rows.map((r) => ({
+        value: r['id_реквизита'],
+        text: r['название'] + (r['банк'] ? ' · ' + r['банк'] : ''),
+      })), rows.length ? 'Выберите…' : '— реквизитов нет —');
+      const def = rows.find((r) => isYes(r['по_умолчанию']));
+      if (def) reqSelect.value = def['id_реквизита'];
+    }
+
+    // Перестроить выпадашку получателя под выбранный тип (§12.2).
+    function rebuildReceivers() {
+      const type = typeSelect.value;
+      if (type === 'прочее') {
+        receiverSelect.style.display = 'none';
+        receiverText.style.display = '';
+        fReq.style.display = 'none';
+      } else {
+        receiverSelect.style.display = '';
+        receiverText.style.display = 'none';
+        const src = RECEIVER_SRC[type];
+        const rows = src ? Cache.forDropdown(src[0]) : [];
+        fillSelect(receiverSelect, rows.map((r) => ({
+          value: r[src[1]], text: r['фио'],
+        })));
+        rebuildReqs();
+      }
+      rebuildObjects();
+      debtHint.textContent = '';
+    }
+
+    // ADR-016: список объектов выбранного собственника (стабильный
+    // id_объекта). Видимо только для тип_получателя='собственник'.
+    // Дубль по id_объекта (если у собственника две версии одного и
+    // того же объекта) — снимаем по последней встретившейся версии,
+    // достаточно для выпадашки.
+    function rebuildObjects() {
+      if (typeSelect.value !== 'собственник') {
+        fObject.style.display = 'none';
+        objectSelect.value = '';
+        return;
+      }
+      fObject.style.display = '';
+      const ownerId = receiverSelect.value;
+      if (!ownerId) {
+        fillSelect(objectSelect, [], '— сначала выберите собственника —');
+        return;
+      }
+      const seen = {};
+      Cache.forDropdown('спр_объекты').forEach((o) => {
+        if (o['id_собственника'] === ownerId) {
+          seen[o['id_объекта']] = o['название_короткое'];
+        }
+      });
+      const opts = Object.keys(seen).map((id) => ({ value: id, text: seen[id] }));
+      fillSelect(objectSelect, opts,
+        opts.length ? 'Выберите объект…' : '— у собственника нет объектов —');
+    }
+
+    typeSelect.addEventListener('change', () => {
+      rebuildReceivers();
+      renderDebt();
+    });
+    receiverSelect.addEventListener('change', () => {
+      rebuildReqs();
+      rebuildObjects();
+      renderDebt();
+    });
+    receiverText.addEventListener('change', renderDebt);
+    rebuildReceivers();
+
+    const draftNote = h('div', { class: 'draft-note', style: 'display:none' });
+
+    function snapshot() {
+      return {
+        дата: dateEl.value, тип: typeSelect.value,
+        получатель: receiverSelect.value, получательТекст: receiverText.value,
+        объект: objectSelect.value,
+        реквизит: reqSelect.value, сумма: sumInput.value,
+        назначение: purposeInput.value, касса: kassaSelect.value,
+        комментарий: commentInput.value,
+      };
+    }
+    function restore(d) {
+      dateEl.value = d.дата || today();
+      typeSelect.value = d.тип || '';
+      rebuildReceivers();             // перестроить под тип
+      receiverSelect.value = d.получатель || '';
+      receiverText.value = d.получательТекст || '';
+      rebuildReqs();                  // под выбранного получателя
+      rebuildObjects();               // под выбранного собственника
+      reqSelect.value = d.реквизит || reqSelect.value;
+      objectSelect.value = d.объект || '';
+      sumInput.value = d.сумма || '';
+      purposeInput.value = d.назначение || '';
+      kassaSelect.value = d.касса || '';
+      commentInput.value = d.комментарий || '';
+      renderDebt();
+    }
+
+    function validate() {
+      [fDate, fType, fReceiver, fObject, fSum, fPurpose, fKassa].forEach(clearError);
+      let ok = true;
+      if (!dateEl.value) { showError(fDate, 'Укажите дату'); ok = false; }
+      if (!typeSelect.value) { showError(fType, 'Выберите тип получателя'); ok = false; }
+      if (!currentReceiverId()) {
+        showError(fReceiver, 'Укажите получателя'); ok = false;
+      }
+      // ADR-016: для выплаты собственнику объект обязателен.
+      if (typeSelect.value === 'собственник' && !objectSelect.value) {
+        showError(fObject, 'Выберите объект, по которому идёт выплата'); ok = false;
+      }
+      if (!(num(sumInput.value) > 0)) {
+        showError(fSum, 'Сумма должна быть больше 0'); ok = false;
+      }
+      if (!purposeInput.value.trim()) {
+        showError(fPurpose, 'Укажите назначение выплаты'); ok = false;
+      }
+      if (!kassaSelect.value) { showError(fKassa, 'Выберите кассу'); ok = false; }
+      return ok;
+    }
+
+    function collect() {
+      const sum = num(sumInput.value);
+      const id = currentReceiverId();
+      const имя = Operations.receiverName(typeSelect.value, id);
+      return {
+        'дата_внесения': nowISO(),
+        'id_менеджера_внёс': employee['id_сотрудника'],
+        'дата_выплаты': dateEl.value,
+        'тип_получателя': typeSelect.value,
+        'id_получателя': id,                       // стабильный id / текст
+        // ADR-016: id_объекта только для собственника (стабильный id);
+        // для остальных типов поле в листе остаётся пустым.
+        'id_объекта': typeSelect.value === 'собственник' ? objectSelect.value : '',
+        'id_реквизита': typeSelect.value === 'прочее' ? '' : reqSelect.value,
+        'сумма_₽': sum,
+        'источник': 'со счёта Ренто',              // §12.5
+        'назначение': purposeInput.value.trim(),
+        'id_связанной_операции': '',               // §12.5
+        'касса': kassaSelect.value,
+        'комментарий': commentInput.value.trim(),
+        'статус': 'активна',
+        'отменена_кем': '', 'отменена_когда': '', 'id_исходной_операции': '',
+        '_journal': CONFIG.JOURNAL_ВЫПЛАТЫ,
+        '_logType': 'выплата',
+        '_shortDesc': 'Выплата ' + имя + ', ' + sum + ' ₽',
+        '_managerId': employee['id_сотрудника'],
+      };
+    }
+
+    const built = composeForm({
+      formType, opts, draftNote, queueKey: 'выплата', validate, collect,
+      // ADR-016: fObject между fReceiver и fReq, виден только для
+      // тип_получателя='собственник'.
+      fieldNodes: [fDate, fType, fReceiver, fObject, fReq, fSum, fPurpose, fKassa, fComment],
+    });
+    setupDraft(formType, built.form, snapshot, restore, draftNote);
+
+    return Screens.formScreen({
+      employee, title: '+ Выплата',
+      subtitle: 'Выплата получателю со счёта Ренто. Под получателем — ' +
+        'подсказка по текущему долгу.',
+      content: built.form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
+  // =========================== «+ Заселение» ===========================
+  // §7. Самая сложная форма: расчёт чистой выручки и долей + блок
+  // распределения (10 типов строк) + многожурнальная запись (§7.6).
+
+  // 10 типов строк распределения (§7.4 / TICKET-4.2).
+  //  recipient: вид контрола получателя — справочник / 'категория' /
+  //             'текст' / 'из_квартиры' (авто-собственник, ADR-014 п.1) /
+  //             null (получателя нет — для строк «Поступит от площадки»).
+  //  журнал:    'выплаты' / 'хоз_расходы' / 'касса' / null (записи нет).
+  //  типПолуч:  значение тип_получателя для журнал_выплаты.
+  //  типКассы:  значение тип_кассы для журнал_касса (ADR-015).
+  const DIST_TYPES = [
+    { value: 'собственник', text: 'Собственнику напрямую от гостя',
+      recipient: 'из_квартиры', журнал: 'выплаты', типПолуч: 'собственник' },
+    { value: 'ренто_рс', text: 'Ренто на р/с (по ссылке гостем)',
+      recipient: null, журнал: 'касса', типКассы: 'р/с' },
+    { value: 'ренто_безнал', text: 'Ренто безнал (от юрлица)',
+      recipient: null, журнал: 'касса', типКассы: 'безнал' },
+    { value: 'ренто_карта', text: 'Ренто на карту физлица (касса)',
+      recipient: null, журнал: 'касса', типКассы: 'карта физлица' },
+    // Тип «Поступит от площадки» убран (INTERFACE_DATA_SPEC v1.6):
+    // batch от площадки фиксируется полем «Площадка должна Ренто ₽»
+    // в шапке — дублировать строкой распределения не нужно.
+    { value: 'горничная', text: 'Горничной напрямую от гостя',
+      recipient: 'спр_горничные', журнал: 'выплаты', типПолуч: 'горничная' },
+    { value: 'мастер', text: 'Мастеру напрямую от гостя',
+      recipient: 'спр_мастера', журнал: 'выплаты', типПолуч: 'мастер' },
+    { value: 'сотрудник', text: 'Сотруднику — зарплата',
+      recipient: 'спр_сотрудники', журнал: 'выплаты', типПолуч: 'сотрудник' },
+    { value: 'хоз_расход', text: 'Хоз-расход',
+      recipient: 'категория', журнал: 'хоз_расходы' },
+    { value: 'прочее', text: 'Прочее',
+      recipient: 'текст', журнал: 'выплаты', типПолуч: 'прочее' },
+  ];
+  // справочник получателя -> [лист, поле стабильного id].
+  const RECIPIENT_SRC = {
+    'спр_собственники': ['спр_собственники', 'id_собственника'],
+    'спр_горничные': ['спр_горничные', 'id_горничной'],
+    'спр_мастера': ['спр_мастера', 'id_мастера'],
+    'спр_сотрудники': ['спр_сотрудники', 'id_сотрудника'],
+  };
+
+  // Поле-«читалка»: значение, которое нельзя править (чистая выручка,
+  // доход Ренто — §7.2). Возвращает узел с ._value для записи текста.
+  function readoutBox() {
+    const value = h('span', { class: 'readout-value' }, '—');
+    const box = h('div', { class: 'field-readout' }, value);
+    box._value = value;
+    return box;
+  }
+
+  function openЗаселение(opts) {
+    const employee = opts.employee;
+    const formType = 'заселение';
+
+    const objects = Cache.forDropdown('спр_объекты');
+    const objectsByVersion = {};
+    objects.forEach((o) => { objectsByVersion[o['id_версии']] = o; });
+    const models = Cache.get('спр_модели_расчёта');
+
+    // --- БРОНИРОВАНИЕ ---
+    const objectSelect = selectInput();
+    fillSelect(objectSelect, objects.map((o) => ({
+      value: o['id_версии'], text: o['название_короткое'],
+    })));
+    const inEl = dateInput();                       // заезд = сегодня
+    const outEl = h('input', { class: 'field-input', type: 'date' });
+    outEl.value = tomorrow();                       // выезд = завтра
+    const channelSelect = selectInput();
+    fillSelect(channelSelect, ['прямая', 'суточно', 'авито', 'яндекс',
+      'островок'].map((c) => ({ value: c, text: c })));
+
+    // --- ФИНАНСЫ ---
+    const sumInput = numberInput();
+    const commissionInput = numberInput();
+    const commissionHint = h('div', { class: 'field-hint' });
+    const netBox = readoutBox();
+    const ownerInput = numberInput();
+    const ownerHint = h('div', { class: 'field-hint' });
+    const rentoBox = readoutBox();
+    const platformInput = numberInput();
+
+    // --- РАСПРЕДЕЛЕНИЕ ---
+    const rowsBox = h('div', { class: 'dist-rows' });
+    const counter = h('span', { class: 'dist-counter' });
+    let rows = [];
+
+    // --- КОММЕНТАРИЙ ---
+    // Касса из шапки убрана (ADR-014 п.3, ADR-015): касса задаётся
+    // типом строки распределения, движения уходят в журнал_касса.
+    const commentInput = textarea('Комментарий');
+
+    // --- поля-обёртки ---
+    const fObject = field('Объект', objectSelect);
+    const fIn = field('Заезд', inEl);
+    const fOut = field('Выезд', outEl);
+    const fChannel = field('Канал брони', channelSelect);
+    const fSum = field('Сумма брони ₽', sumInput);
+    const fCommission = field('Комиссия площадки ₽',
+      h('div', { class: 'field-stack' }, commissionInput, commissionHint));
+    const fNet = field('Чистая выручка ₽', netBox, { aside: 'авто' });
+    const fOwner = field('Доход собственника ₽',
+      h('div', { class: 'field-stack' }, ownerInput, ownerHint));
+    const fRento = field('Доход Ренто ₽', rentoBox, { aside: 'авто' });
+    const fPlatform = field('Площадка должна Ренто ₽', platformInput,
+      { aside: 'для авито / яндекс' });
+    const fComment = field('Комментарий', commentInput, { aside: 'необязательно' });
+
+    // ------------------------- расчёты (§7.1, §7.3) ----------------------
+    function net() {
+      return Math.max(0, num(sumInput.value) - num(commissionInput.value));
+    }
+    function modelOf() {
+      const obj = objectsByVersion[objectSelect.value];
+      if (!obj) return null;
+      return models.find((m) => m['id_модели'] === obj['id_модели']) || null;
+    }
+    // Дефолт дохода собственника по модели объекта (§7.3).
+    function ownerDefault() {
+      const m = modelOf();
+      if (!m) return null;
+      if (String(m['тип']).trim().toLowerCase() === 'фикс') return 0;
+      const share = num(m['доля_ренто_%']);
+      return Math.round(net() * (1 - share / 100));
+    }
+    let lastOwnerDefault = null;
+
+    // Распределено X / Y — счётчик контроля (§7.4).
+    function distSum() {
+      return rows.reduce((s, r) => s + r.sum(), 0);
+    }
+    function syncCounter() {
+      const y = net();
+      // Контроль (INTERFACE_DATA_SPEC v1.6): строки + площадка_должна_₽
+      // = чистая выручка. Поле «Площадка должна Ренто ₽» входит
+      // отдельным слагаемым, не дублируется строкой распределения.
+      const x = distSum() + num(platformInput.value);
+      const delta = y - x;
+      const ok = delta === 0;
+      let text = (ok ? '✓ ' : '') +
+        x.toLocaleString('ru-RU') + ' / ' + y.toLocaleString('ru-RU') + ' ₽';
+      if (delta > 0) {
+        text += ' — ещё ' + delta.toLocaleString('ru-RU') + ' ₽';
+      } else if (delta < 0) {
+        text += ' — лишних ' + Math.abs(delta).toLocaleString('ru-RU') + ' ₽';
+      }
+      counter.textContent = text;
+      counter.className = 'dist-counter ' + (ok ? 'dist-ok' : 'dist-bad');
+    }
+
+    // Пересчёт всех производных полей.
+    function recompute() {
+      const n = net();
+      netBox._value.textContent = money(n);
+
+      const def = ownerDefault();
+      if (def != null) {
+        // Не перебито — подставляем дефолт.
+        if (ownerInput.value === '' ||
+            num(ownerInput.value) === lastOwnerDefault) {
+          ownerInput.value = def;
+        }
+        lastOwnerDefault = def;
+      }
+      // Доход Ренто = чистая − доход собственника (§7.2).
+      const rento = n - num(ownerInput.value);
+      rentoBox._value.textContent = money(rento);
+
+      // Подсказка по доходу собственника (§7.3).
+      const m = modelOf();
+      if (def == null) {
+        ownerHint.textContent = 'выберите объект — подставим долю по модели';
+        ownerHint.className = 'field-hint';
+      } else if (num(ownerInput.value) !== def) {
+        ownerHint.textContent = 'отличается от модели на ' +
+          money(Math.abs(num(ownerInput.value) - def));
+        ownerHint.className = 'field-hint hint-warn';
+      } else {
+        ownerHint.textContent = 'по модели ' +
+          (m ? m['название'] : '') + ' = ' + money(def);
+        ownerHint.className = 'field-hint';
+      }
+      // Канал «прямая» — комиссия ожидается 0 (§7.5: предупреждение,
+      // не блокировка сохранения).
+      if (channelSelect.value === 'прямая' && num(commissionInput.value) !== 0) {
+        commissionHint.textContent = 'для канала «прямая» комиссия обычно 0';
+        commissionHint.className = 'field-hint hint-warn';
+      } else {
+        commissionHint.textContent = '';
+        commissionHint.className = 'field-hint';
+      }
+      syncCounter();
+    }
+
+    [sumInput, commissionInput, ownerInput].forEach((el) => {
+      el.addEventListener('input', recompute);
+    });
+    objectSelect.addEventListener('change', () => {
+      // Сменилась квартира → пересобрать строки-«собственник»
+      // (ADR-014 п.1: получатель и реквизит привязаны к квартире).
+      rows.forEach((r) => r.syncFromObject && r.syncFromObject());
+      recompute();
+    });
+    channelSelect.addEventListener('change', recompute);
+    // Платформа входит в контроль суммы распределения
+    // (INTERFACE_DATA_SPEC v1.6: строки + площадка_должна_₽ = чистая).
+    platformInput.addEventListener('input', syncCounter);
+
+    // --------------------- строка распределения (§7.4) -------------------
+    function makeDistRow() {
+      const typeSelect = selectInput();
+      fillSelect(typeSelect, DIST_TYPES.map((t) => ({
+        value: t.value, text: t.text,
+      })));
+      const recipientSlot = h('div', { class: 'dist-recipient' });
+      let recipientControl = null;
+      // Для типа 'собственник' (ADR-014 п.1) получатель и реквизит
+      // подставляются из выбранной квартиры; держим их отдельно.
+      let derivedOwnerId = '';
+      let derivedRequisiteId = '';
+      const sumEl = numberInput();
+      sumEl.classList.add('dist-sum');
+      const xBtn = h('button', { class: 'dist-x', type: 'button' }, '×');
+
+      const row = {
+        node: null,
+        typeDef: () => DIST_TYPES.find((t) => t.value === typeSelect.value),
+        type: () => typeSelect.value,
+        recipient: () => {
+          const t = row.typeDef();
+          if (t && t.recipient === 'из_квартиры') return derivedOwnerId;
+          return recipientControl ? recipientControl.value : '';
+        },
+        requisiteId: () => derivedRequisiteId,
+        sum: () => num(sumEl.value),
+        serialize: () => ({
+          тип: typeSelect.value,
+          получатель: recipientControl ? recipientControl.value : '',
+          сумма: sumEl.value,
+        }),
+      };
+
+      // Перестроить контрол получателя под выбранный тип строки.
+      function syncRecipient() {
+        recipientSlot.innerHTML = '';
+        recipientControl = null;
+        derivedOwnerId = '';
+        derivedRequisiteId = '';
+        const t = row.typeDef();
+        if (!t || !t.recipient) {
+          recipientSlot.append(h('span', { class: 'dist-norecip' }, '—'));
+          return;
+        }
+        if (t.recipient === 'из_квартиры') {
+          renderOwnerSlot();
+          return;
+        }
+        if (t.recipient === 'текст') {
+          recipientControl = textInput('Кому / за что');
+        } else if (t.recipient === 'категория') {
+          recipientControl = selectInput();
+          fillSelect(recipientControl,
+            categoryOptions(CONFIG.JOURNAL_ХОЗ_РАСХОДЫ, 'расход'));
+        } else {
+          recipientControl = selectInput();
+          const src = RECIPIENT_SRC[t.recipient];
+          fillSelect(recipientControl, Cache.forDropdown(src[0]).map((r) => ({
+            value: r[src[1]], text: r['фио'],
+          })));
+        }
+        recipientControl.classList.add('dist-recipient-ctl');
+        recipientSlot.append(recipientControl);
+      }
+
+      // Рендер слота получателя для строки «Собственнику напрямую»
+      // (ADR-014 п.1): авто-собственник + реквизит «по умолчанию» + копия.
+      function renderOwnerSlot() {
+        recipientSlot.innerHTML = '';
+        derivedOwnerId = '';
+        derivedRequisiteId = '';
+        const obj = objectsByVersion[objectSelect.value];
+        if (!obj) {
+          recipientSlot.append(h('div', { class: 'dist-owner empty' },
+            '— сначала выберите квартиру —'));
+          return;
+        }
+        const ownerId = obj['id_собственника'];
+        const owner = ownerId && Cache.get('спр_собственники')
+          .find((o) => o['id_собственника'] === ownerId);
+        if (!owner) {
+          recipientSlot.append(h('div', { class: 'dist-owner empty' },
+            'у квартиры не указан собственник'));
+          return;
+        }
+        derivedOwnerId = ownerId;
+        const reqs = Cache.get('спр_реквизиты_собственников')
+          .filter((r) => r['id_собственника'] === ownerId && isYes(r['активен']));
+        const def = reqs.find((r) => isYes(r['по_умолчанию']));
+        if (!def) {
+          recipientSlot.append(h('div', { class: 'dist-owner' },
+            h('div', { class: 'owner-name' }, owner['фио']),
+            h('div', { class: 'owner-req empty' },
+              'нет реквизита «по умолчанию» — добавьте флаг в справочнике')));
+          return;
+        }
+        derivedRequisiteId = def['id_реквизита'];
+        const reqText = [def['номер'], def['банк'], def['получатель']]
+          .filter((s) => String(s || '').trim()).join(' · ');
+        const copyBtn = h('button',
+          { class: 'copy-btn', type: 'button', title: 'Скопировать реквизит' },
+          'копировать');
+        copyBtn.addEventListener('click', () => {
+          if (!navigator.clipboard) { copyBtn.textContent = 'нет clipboard'; return; }
+          navigator.clipboard.writeText(reqText).then(() => {
+            const prev = copyBtn.textContent;
+            copyBtn.textContent = '✓ скопировано';
+            setTimeout(() => { copyBtn.textContent = prev; }, 1500);
+          }).catch(() => { copyBtn.textContent = 'ошибка копирования'; });
+        });
+        recipientSlot.append(
+          h('div', { class: 'dist-owner' },
+            h('div', { class: 'owner-name' }, owner['фио']),
+            h('div', { class: 'owner-req-row' },
+              h('div', { class: 'owner-req' }, reqText),
+              copyBtn)));
+      }
+      // Внешние перерисовки (смена квартиры): только для строк-собственника.
+      row.syncFromObject = () => {
+        const t = row.typeDef();
+        if (t && t.recipient === 'из_квартиры') renderOwnerSlot();
+      };
+
+      typeSelect.addEventListener('change', () => { syncRecipient(); recompute(); });
+      sumEl.addEventListener('input', syncCounter);
+      xBtn.addEventListener('click', () => removeRow(row));
+      syncRecipient();
+
+      row.node = h('div', { class: 'dist-row' },
+        typeSelect, recipientSlot, sumEl, xBtn);
+      row.restore = (d) => {
+        typeSelect.value = d.тип || '';
+        syncRecipient();
+        if (recipientControl) recipientControl.value = d.получатель || '';
+        sumEl.value = d.сумма || '';
+      };
+      return row;
+    }
+
+    // Флаг «форма проинициализирована». Пока false (на старте, во время
+    // setupDraft.restore) — addRow/removeRow НЕ сохраняют черновик.
+    // Иначе addRow() начальной пустой строки создавал «черновик», и
+    // плашка «Восстановлен черновик» висела на каждом первом открытии.
+    let formInited = false;
+    function addRow(data) {
+      const row = makeDistRow();
+      rows.push(row);
+      rowsBox.append(row.node);
+      if (data) row.restore(data);
+      syncCounter();
+      if (formInited) saveDraft(formType, snapshot());
+    }
+    function removeRow(row) {
+      rows = rows.filter((r) => r !== row);
+      row.node.remove();
+      syncCounter();
+      if (formInited) saveDraft(formType, snapshot());
+    }
+
+    const addBtn = h('button', { class: 'dist-add', type: 'button' },
+      '+ Добавить строку распределения');
+    addBtn.addEventListener('click', () => addRow());
+
+    // ---------------------------- секции ---------------------------------
+    function section(eyebrow, ...nodes) {
+      return h('div', { class: 'form-section' },
+        h('span', { class: 'eyebrow' }, eyebrow), ...nodes);
+    }
+    const bookingSection = section('БРОНИРОВАНИЕ',
+      fObject,
+      h('div', { class: 'field-row-2' }, fIn, fOut),
+      fChannel);
+    const financeSection = section('ФИНАНСЫ',
+      h('div', { class: 'field-row-2' }, fSum, fCommission),
+      fNet,
+      h('div', { class: 'field-row-2' }, fOwner, fRento),
+      fPlatform);
+    const distSection = section('РАСПРЕДЕЛЕНИЕ',
+      // Подпись «Где деньги физически — сумма строк = чистой выручке»
+      // убрана (ADR-014 п.4). Счётчик сошлось/не сошлось остаётся —
+      // он функциональный.
+      h('div', { class: 'dist-head' }, counter),
+      rowsBox, addBtn);
+
+    // ----------------------------- черновик ------------------------------
+    const draftNote = h('div', { class: 'draft-note', style: 'display:none' });
+
+    function snapshot() {
+      return {
+        объект: objectSelect.value, заезд: inEl.value, выезд: outEl.value,
+        канал: channelSelect.value, сумма: sumInput.value,
+        комиссия: commissionInput.value, доходС: ownerInput.value,
+        площадка: platformInput.value,
+        комментарий: commentInput.value,
+        строки: rows.map((r) => r.serialize()),
+      };
+    }
+    function restore(d) {
+      objectSelect.value = d.объект || '';
+      inEl.value = d.заезд || today();
+      outEl.value = d.выезд || tomorrow();
+      channelSelect.value = d.канал || '';
+      sumInput.value = d.сумма || '';
+      commissionInput.value = d.комиссия || '';
+      platformInput.value = d.площадка || '';
+      commentInput.value = d.комментарий || '';
+      // строки распределения
+      rows.forEach((r) => r.node.remove());
+      rows = [];
+      // Старые черновики могли нести тип `площадка` — он удалён в
+      // INTERFACE_DATA_SPEC v1.6 (платформа теперь только поле в шапке).
+      // Не восстанавливаем такие строки, иначе типа в селекторе нет и
+      // строка остаётся «битой».
+      const validTypes = new Set(DIST_TYPES.map((t) => t.value));
+      (d.строки || []).forEach((rd) => {
+        if (!validTypes.has(rd.тип)) return;
+        addRow(rd);
+      });
+      ownerInput.value = '';
+      recompute();                       // дефолт дохода собственника
+      if (d.доходС) ownerInput.value = d.доходС; // ручной ввод важнее
+      recompute();
+    }
+
+    // ---------------------------- валидации (§7.5) -----------------------
+    function validate() {
+      [fObject, fIn, fOut, fChannel, fSum, fNet, fOwner].forEach(clearError);
+      rows.forEach((r) => r.node.classList.remove('dist-row-error'));
+      let ok = true;
+      const fail = (fw, msg) => { showError(fw, msg); ok = false; };
+
+      if (!objectSelect.value) fail(fObject, 'Выберите объект');
+      if (!channelSelect.value) fail(fChannel, 'Выберите канал брони');
+      if (!inEl.value) fail(fIn, 'Укажите дату заезда');
+      if (!outEl.value) fail(fOut, 'Укажите дату выезда');
+      if (inEl.value && outEl.value && outEl.value <= inEl.value) {
+        fail(fOut, 'Выезд должен быть позже заезда');
+      }
+      if (!(num(sumInput.value) > 0)) fail(fSum, 'Сумма брони должна быть больше 0');
+
+      const n = net();
+      if (!(n > 0)) fail(fNet, 'Чистая выручка должна быть больше 0');
+
+      // Канал «прямая» с ненулевой комиссией не блокирует — это лишь
+      // предупреждение (§7.5), оно показано в подсказке под комиссией.
+
+      // Доход собственника в [0; чистая выручка] (§5.4).
+      const owner = num(ownerInput.value);
+      if (owner < 0 || owner > n) {
+        fail(fOwner, 'Доход собственника — от 0 до чистой выручки');
+      }
+
+      // Распределение.
+      if (!rows.length) {
+        fail(fNet, 'Добавьте хотя бы одну строку распределения');
+      }
+      rows.forEach((r) => {
+        const t = r.typeDef();
+        let bad = false;
+        if (!t) bad = true;
+        if (t && t.recipient && !r.recipient()) bad = true;
+        // Для строки «Собственнику напрямую» (ADR-014 п.1) реквизит
+        // обязателен — без него непонятно, куда платили.
+        if (t && t.recipient === 'из_квартиры' && !r.requisiteId()) bad = true;
+        if (!(r.sum() > 0)) bad = true;
+        if (bad) { r.node.classList.add('dist-row-error'); ok = false; }
+      });
+      // Контроль (INTERFACE_DATA_SPEC v1.6): строки + площадка_должна_₽
+      // = чистая выручка. Платформа отдельным слагаемым, без строки-
+      // дубля «Поступит от площадки».
+      const distTotal = distSum() + num(platformInput.value);
+      if (rows.length && distTotal !== n) {
+        fail(fNet, 'Сумма распределения и «Площадка должна Ренто» (' +
+          distTotal + ') не равна чистой выручке (' + n + ')');
+      }
+      return ok;
+    }
+
+    // ----------------------- что уходит в очередь (§7.6) -----------------
+    function collect() {
+      const n = net();
+      const obj = objectsByVersion[objectSelect.value];
+      const objName = obj ? obj['название_короткое'] : '';
+
+      const parent = {
+        'дата_внесения': nowISO(),
+        'id_менеджера': employee['id_сотрудника'],
+        'тип_записи': 'заселение',
+        'дата_операции': inEl.value,
+        'id_объекта_версии': objectSelect.value,
+        'дата_с': inEl.value,
+        'дата_по': outEl.value,
+        'канал_брони': channelSelect.value,
+        'сумма_бронирования_₽': num(sumInput.value),
+        'комиссия_площадки_₽': num(commissionInput.value),
+        'площадка_должна_₽': num(platformInput.value),
+        'чистая_выручка_₽': n,
+        'доход_собственника_₽': num(ownerInput.value),
+        'доход_ренто_₽': n - num(ownerInput.value),
+        // Колонка `касса` для тип_записи='заселение' не используется —
+        // движения уходят в журнал_касса (ADR-015). Оставляем пустой;
+        // у batch_площадки эта же колонка по-прежнему заполняется.
+        'касса': '',
+        'комментарий': commentInput.value.trim(),
+        'статус': 'активна',
+        'отменена_кем': '', 'отменена_когда': '', 'id_исходной_операции': '',
+      };
+
+      // Связанные строки — только типы, порождающие запись (§7.6,
+      // ADR-015: добавлены строки журнал_касса для ренто_*).
+      const lines = [];
+      rows.forEach((r) => {
+        const t = r.typeDef();
+        if (!t || !t.журнал) return;
+        if (t.журнал === 'выплаты') {
+          lines.push({ journal: CONFIG.JOURNAL_ВЫПЛАТЫ, data: {
+            'дата_внесения': nowISO(),
+            'id_менеджера_внёс': employee['id_сотрудника'],
+            'дата_выплаты': inEl.value,
+            'тип_получателя': t.типПолуч,
+            'id_получателя': r.recipient(),
+            // ADR-016: id_объекта пишется только для собственника
+            // (для горничной/мастера/сотрудника/прочего выплата к
+            // объекту не привязана). Стабильный id, не версия.
+            'id_объекта': t.типПолуч === 'собственник'
+              ? (obj ? obj['id_объекта'] : '') : '',
+            // Для собственника — id реквизита «по умолчанию» из
+            // выбранной квартиры (ADR-014 п.1); для остальных пусто.
+            'id_реквизита': r.requisiteId() || '',
+            'сумма_₽': r.sum(),
+            'источник': 'гостем при заселении',
+            // `назначение` проставит Journal.appendIncasementTx (нужен
+            // id родителя).
+            'касса': '',
+            'комментарий': '',
+            'статус': 'активна',
+            'отменена_кем': '', 'отменена_когда': '',
+            'id_исходной_операции': '',
+          } });
+        } else if (t.журнал === 'хоз_расходы') {
+          // хоз-расход (§7.6): пишется в журнал_хоз_расходы, объект —
+          // объект заселения, id_связанной_операции проставит tx (ADR-012).
+          lines.push({ journal: CONFIG.JOURNAL_ХОЗ_РАСХОДЫ, data: {
+            'дата_внесения': nowISO(),
+            'id_менеджера': employee['id_сотрудника'],
+            'дата': inEl.value,
+            'id_объекта_версии': objectSelect.value,
+            'id_категории': r.recipient(),
+            'описание': 'Хоз-расход при заселении ' + objName,
+            'сумма_₽': r.sum(),
+            'id_получателя': '',
+            'касса': '',
+            'комментарий': '',
+            'статус': 'активна',
+            'отменена_кем': '', 'отменена_когда': '',
+            'id_исходной_операции': '',
+          } });
+        } else if (t.журнал === 'касса') {
+          // ADR-015: ренто_рс / ренто_безнал / ренто_карта → журнал_касса.
+          // тип_кассы зашит в DIST_TYPES (р/с / безнал / карта физлица).
+          lines.push({ journal: CONFIG.JOURNAL_КАССА, data: {
+            'дата_внесения': nowISO(),
+            'id_менеджера': employee['id_сотрудника'],
+            'тип_кассы': t.типКассы,
+            'сумма_₽': r.sum(),
+            'дата': inEl.value,
+            'статус': 'активна',
+            'отменена_кем': '', 'отменена_когда': '',
+          } });
+        }
+      });
+
+      return {
+        parent, lines,
+        '_shortDesc': 'Заселение ' + objName + ', ' +
+          inEl.value + '–' + outEl.value + ', ' + num(sumInput.value) + ' ₽',
+        '_managerId': employee['id_сотрудника'],
+      };
+    }
+
+    // Стартовая строка распределения — одна пустая (§7.4: минимум 1).
+    addRow();
+    recompute();
+
+    const built = composeForm({
+      formType, opts, draftNote, queueKey: 'заселение', validate, collect,
+      fieldNodes: [bookingSection, financeSection, distSection, fComment],
+    });
+    setupDraft(formType, built.form, snapshot, restore, draftNote);
+    // С этого момента дальнейшие add/removeRow — реальные
+    // пользовательские действия, их можно сохранять в черновик.
+    formInited = true;
+
+    return Screens.formScreen({
+      employee, title: '+ Заселение',
+      subtitle: 'Гость заехал — опишите, как были распределены деньги. ' +
+        'Система подскажет по расчёту сумм.',
+      content: built.form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
+  // ================= модалка «Предложить категорию» (§14) ==============
+  // cfg: { employee, contextType: 'расход'|'доход', onProposed(name) }
+  function openCategoryModal(cfg) {
+    const nameInput = textInput('Например: Ремонт сантехники');
+    const whyInput = textarea('Для каких операций нужна эта категория');
+    const fName = field('Название категории', nameInput, { aside: 'обязательно' });
+    const fWhy = field('Зачем нужна', whyInput, { aside: 'обязательно' });
+
+    const ctxNote = h('div', { class: 'modal-ctx' },
+      h('span', {}, '🏷️ Тип категории — '),
+      h('strong', {}, cfg.contextType),
+      h('span', {}, ' (определён формой)'));
+    const pendingNote = h('div', { class: 'pending-note' },
+      '⚠ До одобрения операция сохранится с пометкой PENDING — ' +
+      'основатель пересчитает её при апруве.');
+
+    const submitBtn = h('button',
+      { class: 'btn-primary', type: 'submit' }, 'Отправить заявку');
+    const form = h('form', { class: 'modal-form' },
+      ctxNote, fName, fWhy, pendingNote, submitBtn);
+
+    const modal = UI.modal('Предложить категорию', form);
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      [fName, fWhy].forEach(clearError);
+      let ok = true;
+      if (!nameInput.value.trim()) { showError(fName, 'Введите название'); ok = false; }
+      if (!whyInput.value.trim()) {
+        showError(fWhy, 'Объясните, зачем нужна категория'); ok = false;
+      }
+      if (!ok) return;
+      submitBtn.disabled = true;
+      // Заявка идёт через очередь — отправитель «предложение_категории»
+      // (app.js) пишет в _категории_на_модерации и в _лог_действий.
+      Queue.add('предложение_категории', {
+        'timestamp': nowISO(),
+        'id_менеджера': cfg.employee['id_сотрудника'],
+        'название': nameInput.value.trim(),
+        'тип': cfg.contextType,
+        'зачем': whyInput.value.trim(),
+      });
+      cfg.onProposed(nameInput.value.trim());
+      modal.close();
+    });
+  }
+
+  // ================ «Отчёт собственнику» (§17, TICKET-5.2) =============
+  //
+  // Поток: главный → форма параметров → (чтение журнала + сборка
+  // текста) → экран превью → «Копировать» (clipboard + лог) → главный.
+  //
+  // Блок выплат реализован полностью (§17.2 п.3 для агентских / п.2
+  // для M4). Семантика id_объекта — стабильный id (ADR-018), на это
+  // ссылаются и openЗаселение.collect, и openВыплата.collect.
+
+  // Кол-во полных дней между двумя датами YYYY-MM-DD, включительно.
+  function daysInclusive(fromStr, toStr) {
+    if (!fromStr || !toStr) return 0;
+    const a = new Date(fromStr + 'T00:00:00');
+    const b = new Date(toStr + 'T00:00:00');
+    return Math.max(0, Math.round((b - a) / 86400000) + 1);
+  }
+  // Длительность брони (выезд − заезд), как в посуточной аренде.
+  function stayDays(fromStr, toStr) {
+    if (!fromStr || !toStr) return 0;
+    const a = new Date(fromStr + 'T00:00:00');
+    const b = new Date(toStr + 'T00:00:00');
+    return Math.max(0, Math.round((b - a) / 86400000));
+  }
+  // Ночи брони с пересечением с периодом отчёта. Бронь занимает
+  // ночи [дата_с, дата_по) — день выезда не ночь. Период отчёта —
+  // даты включительно [periodFrom, periodTo]; следующая «ночь» после
+  // periodTo — это уже periodTo+1 утром, так что верхняя граница
+  // пересечения = periodTo+1day (исключая).
+  function clippedNights(stayFrom, stayTo, periodFrom, periodTo) {
+    if (!stayFrom || !stayTo) return 0;
+    const a0 = new Date(stayFrom + 'T00:00:00').getTime();
+    const a1 = new Date(stayTo + 'T00:00:00').getTime();
+    const p0 = new Date(periodFrom + 'T00:00:00').getTime();
+    const p1 = new Date(periodTo + 'T00:00:00').getTime() + 86400000;
+    const lo = Math.max(a0, p0);
+    const hi = Math.min(a1, p1);
+    return Math.max(0, Math.round((hi - lo) / 86400000));
+  }
+  // Дней в месяце даты YYYY-MM-DD: EOMONTH(дата,0).getDate().
+  // Используется как знаменатель пропорции M4: реальная длительность
+  // месяца (28/29/30/31), а не условные «31 день» как было раньше.
+  function daysInMonth(dateStr) {
+    if (!dateStr) return 31;
+    const d = new Date(dateStr + 'T00:00:00');
+    return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  }
+  // Бронь пересекается с периодом, если её дата_с ИЛИ дата_по в нём
+  // (§17.2 шаг 1 — "дата_с или дата_по попадает в период").
+  function broneInPeriod(rec, from, to) {
+    const ds = String(rec['дата_с'] || '');
+    const dp = String(rec['дата_по'] || '');
+    const dsIn = ds && from <= ds && ds <= to;
+    const dpIn = dp && from <= dp && dp <= to;
+    return dsIn || dpIn;
+  }
+
+  // Сборка текста отчёта по одному объекту собственника. Возвращает
+  // строку — кусок отчёта; склейку секций делает caller.
+  // incomeRecords — записи журнала_поступления;
+  // paymentRecords — записи журнала_выплаты;
+  // ownerHasSingleObject — у собственника всего один объект (тогда
+  //   выплаты без id_объекта однозначно его, мы их подхватываем как
+  //   фолбэк для исторических записей до ADR-016).
+  function renderObjectSection(args) {
+    const { owner, object, model, periodFrom, periodTo,
+      incomeRecords, paymentRecords, ownerHasSingleObject } = args;
+    const isFix = String(model['тип'] || '').trim().toLowerCase() === 'фикс';
+    // Все версии этого объекта (на агрегацию по периоду).
+    const versions = Cache.get('спр_объекты')
+      .filter((o) => o['id_объекта'] === object['id_объекта'])
+      .map((o) => o['id_версии']);
+    const versionSet = new Set(versions);
+
+    // Активные заселения этого объекта в периоде.
+    const stays = incomeRecords.filter((rec) => {
+      const d = rec.data;
+      if (String(d['статус']).trim() === 'отменена') return false;
+      if (String(d['тип_записи']) !== 'заселение') return false;
+      if (!versionSet.has(d['id_объекта_версии'])) return false;
+      return broneInPeriod(d, periodFrom, periodTo);
+    });
+
+    const sumBookings = stays.reduce(
+      (s, r) => s + num(r.data['сумма_бронирования_₽']), 0);
+    const sumCommission = stays.reduce(
+      (s, r) => s + num(r.data['комиссия_площадки_₽']), 0);
+    const sumNet = stays.reduce(
+      (s, r) => s + num(r.data['чистая_выручка_₽']), 0);
+    const sumRento = stays.reduce(
+      (s, r) => s + num(r.data['доход_ренто_₽']), 0);
+    const sumOwner = stays.reduce(
+      (s, r) => s + num(r.data['доход_собственника_₽']), 0);
+    const arrivals = stays.length;
+    // Загрузка: считаем ночи с обрезанием по периоду (брони, которые
+    // частью лежат вне периода, попадают только пересечением). >100%
+    // не обрезаем — если две брони пересеклись на одном объекте, это
+    // аномалия данных, и она должна быть видна (не маскироваться).
+    const stayDaysTotal = stays.reduce(
+      (s, r) => s + clippedNights(
+        r.data['дата_с'], r.data['дата_по'], periodFrom, periodTo), 0);
+    const periodDays = daysInclusive(periodFrom, periodTo);
+    const loadPct = periodDays
+      ? Math.round((stayDaysTotal / periodDays) * 100) : 0;
+
+    // Заголовок секции: «ФИО — Объект».
+    const header = owner['фио'] + ' — ' + object['название_короткое'] + '\n' +
+      'Отчётный период: ' + periodFrom + ' — ' + periodTo + '\n';
+
+    // Колоночный формат: справа — суммы. Простая раскладка
+    // padEnd(40)+padStart(15). Точный отступ ради читаемости при
+    // вставке в Telegram/WhatsApp (моноширинный или нет).
+    const fmt = (label, value) =>
+      String(label).padEnd(38) + ' ' + String(value).padStart(15);
+    const fmtMoney = (label, value, signed) => {
+      const v = signed ? '−' + money(value) : money(value);
+      return fmt(label, v);
+    };
+
+    // --- Блок выплат (§17.2 шаг 3 для агентских, шаг 2 для M4) -------
+    // Источники для агентских — оба (со счёта Ренто + гостем при
+    // заселении). Для M4 — только со счёта Ренто (гость напрямую
+    // собственнику не платит). id_объекта — стабильный (ADR-018).
+    const allowedSources = isFix
+      ? new Set(['со счёта Ренто'])
+      : new Set(['со счёта Ренто', 'гостем при заселении']);
+    const objId = object['id_объекта'];
+    const ownerId = owner['id_собственника'];
+    const matchedPayments = paymentRecords.filter((rec) => {
+      const d = rec.data;
+      if (String(d['статус']).trim() === 'отменена') return false;
+      if (d['тип_получателя'] !== 'собственник') return false;
+      if (d['id_получателя'] !== ownerId) return false;
+      if (!allowedSources.has(String(d['источник']).trim())) return false;
+      const pd = String(d['дата_выплаты'] || '');
+      if (!(pd >= periodFrom && pd <= periodTo)) return false;
+      const recObj = String(d['id_объекта'] || '').trim();
+      // Точное совпадение по объекту — берём. Пустой id_объекта —
+      // берём только если у собственника всего один объект (тогда
+      // привязка однозначна, это страховка от исторических записей
+      // до ADR-016).
+      if (recObj === objId) return true;
+      if (recObj === '' && ownerHasSingleObject) return true;
+      return false;
+    });
+    // Группировка по дате выплаты, итог.
+    const byDate = {};
+    matchedPayments.forEach((rec) => {
+      const d = rec.data;
+      const key = String(d['дата_выплаты'] || '');
+      byDate[key] = (byDate[key] || 0) + num(d['сумма_₽']);
+    });
+    const paymentDates = Object.keys(byDate).sort();
+    const paidTotal = paymentDates.reduce((s, k) => s + byDate[k], 0);
+
+    function paidBlock(toAmount) {
+      const out = ['ВЫПЛАЧЕНО:'];
+      if (!paymentDates.length) {
+        out.push('   (за период выплат не было)');
+      } else {
+        paymentDates.forEach((dt) => {
+          out.push('   ' + fmt(dt, money(byDate[dt])));
+        });
+      }
+      out.push('   ' + fmt('ИТОГО:', money(paidTotal)));
+      out.push('');
+      const debt = toAmount - paidTotal;
+      if (debt > 0) {
+        out.push(fmt('Долг Ренто:', money(debt)));
+      } else if (debt < 0) {
+        out.push(fmt('Долг Ренто:', '0 ₽ (переплата ' + money(-debt) + ')'));
+      } else {
+        out.push(fmt('Долг Ренто:', money(0)));
+      }
+      return out;
+    }
+
+    const lines = [header];
+    if (isFix) {
+      const fix = num(object['фикс_₽']);
+      // Пропорция дней: знаменатель — реальная длительность месяца
+      // даты-начала периода (DAY(EOMONTH(periodFrom,0))), не условные
+      // «31». Февральский отчёт за полный месяц = фикс целиком,
+      // а за две недели февраля = фикс × 14/28 (или 29 в високосный).
+      const monthDays = daysInMonth(periodFrom);
+      const payoutCalc = Math.round(fix * periodDays / monthDays);
+      const payoutLabel = periodDays === monthDays
+        ? 'Фиксированный платёж по договору:'
+        : 'Фикс по договору (' + periodDays + ' дн. из ' + monthDays + '):';
+      lines.push(fmt(payoutLabel, money(payoutCalc)));
+      lines.push('');
+      lines.push(...paidBlock(payoutCalc));
+      lines.push('');
+      lines.push('Справочно (не идёт в расчёт):');
+      lines.push('   ' + fmt('Заездов:', arrivals));
+      lines.push('   ' + fmt('Загрузка:', loadPct + '%'));
+      lines.push('   ' + fmt('Сумма броней:', money(sumBookings)));
+    } else {
+      const share = num(model['доля_ренто_%']);
+      lines.push(fmt('Общая сумма бронирований', money(sumBookings)));
+      lines.push(fmtMoney('Комиссия площадок', sumCommission, true));
+      lines.push(fmt('Фактический доход', money(sumNet)));
+      lines.push(fmtMoney('Наша комиссия (' + share + '%)', sumRento, true));
+      lines.push(fmt('К выплате собственнику', money(sumOwner)));
+      lines.push('');
+      lines.push(...paidBlock(sumOwner));
+      lines.push('');
+      lines.push(fmt('Заездов:', arrivals));
+      lines.push(fmt('Загрузка:', loadPct + '%'));
+    }
+    return lines.join('\n');
+  }
+
+  // Полная сборка текста отчёта: одна секция на объект + разделители.
+  function buildReportText(args) {
+    const { owner, objects, periodFrom, periodTo,
+      incomeRecords, paymentRecords, models } = args;
+    const ownerHasSingleObject = objects.length === 1;
+    const sections = objects.map((obj) => {
+      const model = models.find((m) => m['id_модели'] === obj['id_модели']);
+      if (!model) {
+        return owner['фио'] + ' — ' + obj['название_короткое'] + '\n' +
+          'Модель расчёта не найдена в справочнике — отчёт собрать нельзя.';
+      }
+      return renderObjectSection({
+        owner, object: obj, model, periodFrom, periodTo,
+        incomeRecords, paymentRecords, ownerHasSingleObject,
+      });
+    });
+
+    // Орфан-выплаты: записи собственнику без id_объекта при нескольких
+    // объектах в отчёте — в посекционные суммы они не попали и могут
+    // ввести в заблуждение. Перечисляем их явно одним блоком в конце.
+    let orphanBlock = '';
+    if (!ownerHasSingleObject) {
+      const objIds = new Set(objects.map((o) => o['id_объекта']));
+      const orphans = paymentRecords.filter((rec) => {
+        const d = rec.data;
+        if (String(d['статус']).trim() === 'отменена') return false;
+        if (d['тип_получателя'] !== 'собственник') return false;
+        if (d['id_получателя'] !== owner['id_собственника']) return false;
+        const pd = String(d['дата_выплаты'] || '');
+        if (!(pd >= periodFrom && pd <= periodTo)) return false;
+        const recObj = String(d['id_объекта'] || '').trim();
+        return recObj === '' || !objIds.has(recObj);
+      });
+      if (orphans.length) {
+        const total = orphans.reduce((s, r) => s + num(r.data['сумма_₽']), 0);
+        const lines = ['Внимание: ' + orphans.length +
+          ' выплат(ы) собственнику не привязаны к объектам этого отчёта,',
+          'в суммы выше не вошли:'];
+        orphans.forEach((r) => {
+          const d = r.data;
+          lines.push('   ' +
+            String(d['дата_выплаты'] || '—').padEnd(12) + ' ' +
+            money(num(d['сумма_₽'])).padStart(12) + '   ' +
+            (d['назначение'] || ''));
+        });
+        lines.push('   ИТОГО орфан: ' + money(total));
+        orphanBlock = '\n\n' + lines.join('\n');
+      }
+    }
+
+    // Несколько объектов — добавим вводную «Все объекты собственника (N)».
+    if (objects.length > 1) {
+      const intro = owner['фио'] + ' — Все объекты собственника (' +
+        objects.length + ')\n' +
+        'Отчётный период: ' + periodFrom + ' — ' + periodTo + '\n';
+      return intro + '\n' + sections.join('\n\n— — —\n\n') + orphanBlock;
+    }
+    return sections[0] + orphanBlock;
+  }
+
+  function openОтчётСобственнику(opts) {
+    const employee = opts.employee;
+
+    const ownerSelect = selectInput();
+    fillSelect(ownerSelect, Cache.forDropdown('спр_собственники').map((o) => ({
+      value: o['id_собственника'], text: o['фио'],
+    })));
+    const objectSelect = selectInput();
+    const fromEl = h('input', { class: 'field-input', type: 'date' });
+    const toEl = h('input', { class: 'field-input', type: 'date' });
+
+    const fOwner = field('Собственник', ownerSelect);
+    const fObject = field('Объект', objectSelect,
+      { aside: 'или «все объекты собственника»' });
+    const fFrom = field('Период с', fromEl);
+    const fTo = field('Период по', toEl);
+
+    // Все актуальные версии объектов выбранного собственника — для
+    // выпадашки. Значение опции — стабильный id_объекта.
+    function rebuildObjects() {
+      const ownerId = ownerSelect.value;
+      if (!ownerId) {
+        fillSelect(objectSelect, [], '— сначала выберите собственника —');
+        return;
+      }
+      // Уникальные id_объекта (стабильный), название из актуальной версии.
+      const seen = {};
+      Cache.forDropdown('спр_объекты').forEach((o) => {
+        if (o['id_собственника'] === ownerId) {
+          seen[o['id_объекта']] = o['название_короткое'];
+        }
+      });
+      const opts2 = [{ value: '__all__', text: 'Все объекты собственника' }]
+        .concat(Object.keys(seen).map((id) => ({ value: id, text: seen[id] })));
+      objectSelect.innerHTML = '';
+      objectSelect.append(h('option', { value: '' }, 'Выберите…'));
+      opts2.forEach((o) => objectSelect.append(
+        h('option', { value: o.value }, o.text)));
+    }
+    ownerSelect.addEventListener('change', rebuildObjects);
+    rebuildObjects();
+
+    const submitBtn = h('button',
+      { class: 'btn-primary btn-auto', type: 'submit' }, 'Собрать отчёт');
+    const cancelBtn = h('button',
+      { class: 'btn-ghost', type: 'button' }, 'Отмена');
+    cancelBtn.addEventListener('click', () => opts.onExit());
+
+    const footer = h('div', { class: 'op-footer' },
+      h('span', { class: 'op-footer-hint' }, ''),
+      h('div', { class: 'op-footer-actions' }, cancelBtn, submitBtn));
+
+    const form = h('form', { class: 'op-form' },
+      fOwner, fObject,
+      h('div', { class: 'field-row-2' }, fFrom, fTo),
+      h('div', { class: 'op-divider' }), footer);
+
+    function validate() {
+      [fOwner, fObject, fFrom, fTo].forEach(clearError);
+      let ok = true;
+      if (!ownerSelect.value) { showError(fOwner, 'Выберите собственника'); ok = false; }
+      if (!objectSelect.value) { showError(fObject, 'Выберите объект или «все»'); ok = false; }
+      if (!fromEl.value) { showError(fFrom, 'Укажите начало периода'); ok = false; }
+      if (!toEl.value) { showError(fTo, 'Укажите конец периода'); ok = false; }
+      if (fromEl.value && toEl.value && fromEl.value > toEl.value) {
+        showError(fTo, 'Конец периода раньше начала'); ok = false;
+      }
+      return ok;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      submitBtn.disabled = true;
+      if (!validate()) { submitBtn.disabled = false; return; }
+      submitBtn.textContent = 'Читаю журналы…';
+      try {
+        const both = await Journal.readMany([
+          CONFIG.JOURNAL_ПОСТУПЛЕНИЯ, CONFIG.JOURNAL_ВЫПЛАТЫ,
+        ]);
+        const incomeRecords =
+          (both[CONFIG.JOURNAL_ПОСТУПЛЕНИЯ] && both[CONFIG.JOURNAL_ПОСТУПЛЕНИЯ].records) || [];
+        const paymentRecords =
+          (both[CONFIG.JOURNAL_ВЫПЛАТЫ] && both[CONFIG.JOURNAL_ВЫПЛАТЫ].records) || [];
+        const owner = Cache.get('спр_собственники')
+          .find((o) => o['id_собственника'] === ownerSelect.value);
+        const models = Cache.get('спр_модели_расчёта');
+        // Объекты для отчёта.
+        const allOwnerObjects = (() => {
+          const seen = {};
+          Cache.forDropdown('спр_объекты').forEach((o) => {
+            if (o['id_собственника'] === ownerSelect.value) {
+              seen[o['id_объекта']] = o;
+            }
+          });
+          return Object.values(seen);
+        })();
+        const objects = objectSelect.value === '__all__'
+          ? allOwnerObjects
+          : allOwnerObjects.filter((o) => o['id_объекта'] === objectSelect.value);
+        const text = buildReportText({
+          owner, objects, periodFrom: fromEl.value, periodTo: toEl.value,
+          incomeRecords, paymentRecords, models,
+        });
+        openPreview({
+          employee, owner, periodFrom: fromEl.value, periodTo: toEl.value,
+          objectsCount: objects.length, originalText: text,
+          onExit: opts.onExit,
+          onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+        });
+      } catch (err) {
+        console.error('Сборка отчёта:', err);
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Собрать отчёт';
+        alert('Не удалось собрать отчёт: ' + (err.message || err));
+      }
+    });
+
+    return Screens.formScreen({
+      employee, title: 'Отчёт собственнику',
+      subtitle: 'Выберите собственника, объект и период — система соберёт ' +
+        'текст отчёта, его можно будет отредактировать и скопировать.',
+      breadcrumb: 'Отчёты',
+      content: form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
+  // ----- Экран превью (полноэкранный, не модалка — ADR-006) -----------
+  function openPreview(cfg) {
+    const textArea = h('textarea',
+      { class: 'field-input field-textarea report-area', rows: '18' });
+    textArea.value = cfg.originalText;
+
+    const sourceHint = h('div', { class: 'field-hint' },
+      'исходные цифры из системы — текст можно отредактировать перед отправкой');
+
+    const copyBtn = h('button',
+      { class: 'btn-primary btn-auto', type: 'button' }, 'Копировать');
+    const cancelBtn = h('button',
+      { class: 'btn-ghost', type: 'button' }, 'Отмена');
+    cancelBtn.addEventListener('click', () => cfg.onExit());
+
+    // Простой однострочный diff: считаем, текст изменён или нет, а
+    // строки отличия складываем в комментарий для лога. Глубокий diff
+    // лога не несёт смысла — основатель сам видит текст в превью.
+    function isEdited() { return textArea.value !== cfg.originalText; }
+    function shortDescription() {
+      return cfg.owner['фио'] + ', ' +
+        cfg.periodFrom + ' — ' + cfg.periodTo + ', ' +
+        'объектов: ' + cfg.objectsCount + ', ' +
+        'текст изменён: ' + (isEdited() ? 'да' : 'нет');
+    }
+
+    copyBtn.addEventListener('click', async () => {
+      copyBtn.disabled = true;
+      try {
+        if (navigator.clipboard) {
+          await navigator.clipboard.writeText(textArea.value);
+        } else {
+          textArea.select();
+          document.execCommand('copy');
+        }
+      } catch (err) {
+        copyBtn.disabled = false;
+        alert('Не удалось скопировать в буфер: ' + (err.message || err));
+        return;
+      }
+      // Лог факта генерации (§17.5) — через очередь, ретраи бесплатно.
+      Queue.add('отчёт_собственнику', {
+        'timestamp': nowISO(),
+        'id_менеджера': cfg.employee['id_сотрудника'],
+        'краткое_описание': shortDescription(),
+      });
+      cfg.onExit();
+    });
+
+    const footer = h('div', { class: 'op-footer' },
+      h('span', { class: 'op-footer-hint' }, 'Текст уже в нужном формате — ' +
+        'можно править перед отправкой собственнику'),
+      h('div', { class: 'op-footer-actions' }, cancelBtn, copyBtn));
+
+    const body = h('div', { class: 'op-form' },
+      sourceHint, textArea,
+      h('div', { class: 'op-divider' }), footer);
+
+    return Screens.formScreen({
+      employee: cfg.employee,
+      title: 'Превью отчёта',
+      subtitle: 'Проверьте текст и нажмите «Копировать», чтобы отправить ' +
+        'собственнику. Сам факт копирования запишется в лог действий.',
+      breadcrumb: 'Отчёты',
+      content: body,
+      onBack: cfg.onExit,
+      onRefresh: cfg.onRefresh, onLogout: cfg.onLogout,
+    });
+  }
+
+  // ===================== «Поиск операций» (§16, §18.2) =================
+  // Полноэкранный экран основателя (ADR-006). Только для основателя
+  // (см. FOUNDER_ONLY_FORMS в app.js). Тикет 6.1 — каркас:
+  //
+  // По букве §16 корректируется любая операция «новой строкой в том же
+  // журнале». На практике многожурнальные операции (заселение и его
+  // связанные строки выплат/касс/хоз-расходов) ломают инвариант §7
+  // («сумма строк распределения = чистой выручке»), а §16 не описывает,
+  // как считается «дельта чистой выручки при сохранённом распределении».
+  // Поэтому в скоупе 6.1 — только одножурнальные операции:
+  //   - журнал_уборки, журнал_мастер
+  //   - журнал_хоз_расходы / журнал_выплаты без id_связанной_операции
+  //   - журнал_прочие_расходы / журнал_прочие_доходы
+  //   - журнал_поступления для тип_записи=batch_площадки
+  // Заселение, связанные строки заселения и кассовые движения — не
+  // корректируются здесь (если понадобится — отдельный ADR + правки §16).
+  //
+  // Список таких журналов держим один раз: и для batchGet поиска, и для
+  // фильтрации «корректируемых» строк.
+  const CORRECTABLE_JOURNALS = [
+    CONFIG.JOURNAL_УБОРКИ,
+    CONFIG.JOURNAL_МАСТЕР,
+    CONFIG.JOURNAL_ХОЗ_РАСХОДЫ,
+    CONFIG.JOURNAL_ПРОЧИЕ_РАСХОДЫ,
+    CONFIG.JOURNAL_ПРОЧИЕ_ДОХОДЫ,
+    CONFIG.JOURNAL_ВЫПЛАТЫ,
+    CONFIG.JOURNAL_ПОСТУПЛЕНИЯ,
+  ];
+
+  // Тип операции для записи (по реестру Operations) — нужен для подписи
+  // в списке поиска и в форме корректировки. Учитывает match-предикаты
+  // реестра: для одной строки журнала_поступления это либо «заселение»,
+  // либо «batch_площадки»; для журнал_выплаты — «выплата» (если строка
+  // самостоятельная) или «касса_заселения» (не сюда). Возвращает null,
+  // если строка не сматчилась ни одним типом — такие отсеиваются ещё
+  // на этапе поиска.
+  function opTypeFor(journal, data) {
+    for (const t of Operations.list()) {
+      if (t.journal !== journal) continue;
+      if (t.match && !t.match(data)) continue;
+      return t;
+    }
+    return null;
+  }
+
+  function isCorrectable(op, data) {
+    if (!op) return false;
+    // Заселение и кассовые строки — вне скоупа 6.1 (см. комментарий
+    // CORRECTABLE_JOURNALS).
+    if (op.key === 'заселение' || op.key === 'касса_заселения') return false;
+    // Уже отменённую корректировать бессмысленно — она и так не идёт в
+    // витрины. Откат отменённой — невозможен (по «Моим внесениям»).
+    if (String(data['статус']).trim() === 'отменена') return false;
+    return true;
+  }
+
+  // Поле журнала, в котором лежит id менеджера-автора. У журнал_выплаты
+  // — id_менеджера_внёс (ADR-016 / §4.22), у остальных — id_менеджера.
+  function managerFieldOf(headers) {
+    return headers.indexOf('id_менеджера_внёс') !== -1
+      ? 'id_менеджера_внёс' : 'id_менеджера';
+  }
+
+  function openПоискОпераций(opts) {
+    const employee = opts.employee;
+
+    const idInput = textInput('OP-2026-05-...');
+    const fromInput = h('input', { class: 'field-input', type: 'date' });
+    const toInput = h('input', { class: 'field-input', type: 'date' });
+    const searchBtn = h('button',
+      { class: 'btn-primary btn-auto', type: 'submit' }, 'Найти');
+
+    const fId = field('ID операции', idInput,
+      { aside: 'полностью или фрагмент' });
+    const fFrom = field('Внесена с', fromInput, { aside: 'необязательно' });
+    const fTo = field('Внесена по', toInput, { aside: 'необязательно' });
+
+    const fieldsRow = h('div', { class: 'op-search-fields' }, fId, fFrom, fTo);
+    const resultsBox = h('div', { class: 'op-search-results' });
+    const hintBox = h('p', { class: 'muted' },
+      'Введите ID операции (или его фрагмент) и/или диапазон дат внесения, ' +
+      'затем нажмите «Найти». Поиск идёт по операциям, которые можно ' +
+      'корректировать: уборка, мастер, хоз-расход, прочее, выплата, ' +
+      'batch площадки. Заселения и связанные с ними строки в этом разделе ' +
+      'не показываются — для них правка идёт через откат.');
+    resultsBox.append(hintBox);
+
+    function setStatus(text, cls) {
+      UI.clear(resultsBox);
+      resultsBox.append(h('p', { class: cls || 'muted' }, text));
+    }
+
+    function withinPeriod(iso) {
+      if (!iso) return false;
+      const day = String(iso).slice(0, 10);
+      if (fromInput.value && day < fromInput.value) return false;
+      if (toInput.value && day > toInput.value) return false;
+      return true;
+    }
+
+    async function runSearch() {
+      const idQuery = idInput.value.trim();
+      const hasFrom = !!fromInput.value;
+      const hasTo = !!toInput.value;
+      if (!idQuery && !hasFrom && !hasTo) {
+        setStatus('Заполните хотя бы одно поле — иначе вернётся слишком много.',
+          'error-banner');
+        return;
+      }
+      if (hasFrom && hasTo && fromInput.value > toInput.value) {
+        setStatus('Дата «с» позже даты «по» — поправьте.', 'error-banner');
+        return;
+      }
+      setStatus('Ищем...');
+
+      let byJournal;
+      try {
+        byJournal = await Journal.readMany(CORRECTABLE_JOURNALS);
+      } catch (err) {
+        console.error('Поиск операций:', err);
+        setStatus('Не удалось прочитать журналы: ' +
+          ((err && err.message) || 'ошибка сети') + '.', 'error-banner');
+        return;
+      }
+
+      const lowerId = idQuery.toLowerCase();
+      const rows = [];
+      CORRECTABLE_JOURNALS.forEach((journal) => {
+        const j = byJournal[journal];
+        if (!j) return;
+        j.records.forEach((rec) => {
+          const data = rec.data;
+          const id = String(data['id_операции'] || '');
+          if (!id) return;
+          const op = opTypeFor(journal, data);
+          if (!isCorrectable(op, data)) return;
+          if (lowerId && !id.toLowerCase().includes(lowerId)) return;
+          if ((hasFrom || hasTo) && !withinPeriod(data['дата_внесения'])) return;
+          rows.push({ journal, op, data });
+        });
+      });
+
+      // Свежие — сверху.
+      rows.sort((a, b) => String(b.data['дата_внесения'])
+        .localeCompare(String(a.data['дата_внесения'])));
+
+      UI.clear(resultsBox);
+      if (!rows.length) {
+        resultsBox.append(h('p', { class: 'muted' },
+          'Ничего не нашлось. Попробуйте более широкий период или другой ID.'));
+        return;
+      }
+      resultsBox.append(h('p', { class: 'muted' },
+        'Найдено: ' + rows.length + '.'));
+
+      const table = h('div', { class: 'today-table' });
+      table.append(h('div', { class: 'today-row today-thead' },
+        h('div', { class: 'tc tc-id' }, 'ID'),
+        h('div', { class: 'tc tc-type' }, 'ТИП'),
+        h('div', { class: 'tc tc-desc' }, 'ОПИСАНИЕ'),
+        h('div', { class: 'tc tc-sum' }, 'СУММА'),
+        h('div', { class: 'tc tc-status' }, 'ДЕЙСТВИЕ')));
+
+      rows.forEach((entry) => {
+        const { op, data } = entry;
+        const correctBtn = h('button',
+          { class: 'link-btn', type: 'button' }, 'Создать корректировку');
+        correctBtn.addEventListener('click', () => {
+          opts.onOpenКорректировка(entry);
+        });
+        table.append(h('div', { class: 'today-row' },
+          h('div', { class: 'tc tc-id' }, data['id_операции']),
+          h('div', { class: 'tc tc-type' }, op.label),
+          h('div', { class: 'tc tc-desc' }, op.describe(data)),
+          h('div', { class: 'tc tc-sum' }, money(Operations.sumOf(op, data))),
+          h('div', { class: 'tc tc-status' }, correctBtn)));
+      });
+
+      resultsBox.append(table);
+    }
+
+    const form = h('form', { class: 'op-form op-search-form' },
+      fieldsRow,
+      h('div', { class: 'op-footer' },
+        h('span', { class: 'op-footer-hint' },
+          'Поиск читает 7 журналов одним запросом.'),
+        h('div', { class: 'op-footer-actions' }, searchBtn)),
+      h('div', { class: 'op-divider' }),
+      resultsBox);
+    form.addEventListener('submit', (e) => { e.preventDefault(); runSearch(); });
+
+    return Screens.formScreen({
+      employee, title: 'Поиск операций',
+      subtitle: 'Раздел для корректировок задним числом (старше дня). ' +
+        'Найдите операцию и нажмите «Создать корректировку».',
+      breadcrumb: 'Корректировки',
+      content: form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
+  // ======================= «Корректировка» (§16) =======================
+  // Полноэкранный экран (ADR-006). Создаётся из «Поиск операций» —
+  // не из главного меню, поэтому в FORM_OPENERS не сидит.
+  //
+  // §16.3 v1.7: новая строка в ТОМ ЖЕ журнале, что исходная; исходная
+  // не редактируется; в новой строке — `id_исходной_операции` ссылается
+  // на КОРЕНЬ цепочки (rootId — вычислен ниже, плоская цепочка),
+  // `сумма_₽` = дельта (Морган #8), комментарий начинается с
+  // «КОРРЕКТИРОВКА к [id_корня]: [причина]». Структурные поля
+  // (объект, получатель, дата_операции) копируются из исходной — в
+  // форме они read-only (решение Абдулы 28.05.2026: смена идентичности
+  // операции = отмена + новая, не корректировка). Поле `тип_записи`
+  // тоже наследуется (НЕ ставим `корректировка`) — признак корректировки
+  // = непустое `id_исходной_операции`; это сохраняет видимость
+  // корректировки batch_площадки в реестре Operations.
+  //
+  // opts:
+  //   { employee, original: { journal, op, data }, onExit, onRefresh, onLogout }
+  function openКорректировка(opts) {
+    const employee = opts.employee;
+    const { journal, op, data: originalData } = opts.original;
+    const sumField = op.sumField || 'сумма_₽';
+    const originalId = originalData['id_операции'];
+    // §16.3 v1.7: id_исходной_операции корректировки указывает на КОРЕНЬ
+    // цепочки, не на непосредственного предшественника. Если корректируем
+    // оригинал — корень это он сам; если корректируем уже корректировку —
+    // её id_исходной_операции уже указывает на корень, копируем. Итог:
+    // плоский список, витрины собирают всё одноуровневым SUMIFS (§16.4).
+    const existingRoot = String(originalData['id_исходной_операции'] || '').trim();
+    const rootId = existingRoot || originalId;
+    const isChainedCorrection = !!existingRoot;
+
+    // §16.5: превью «итог после корректировки» считается ОТ КОРНЯ
+    // цепочки, не от корректируемой строки. rootTotal = sum активных
+    // записей с id_операции = rootId ИЛИ id_исходной_операции = rootId.
+    // Загружается лениво при открытии формы (отдельный read журнала —
+    // sender 'корректировка' тоже читает byJournal через appendOperation,
+    // но это два разных момента: тут — для UI, там — для записи; они
+    // не делят кэш по дизайну). Пока грузим — превью и сводка
+    // отображают «Загружаем итог по корню...».
+    let rootTotal = null;
+    let rootTotalError = null;
+    const rootTotalValueEl = h('span', { class: 'op-summary-value' },
+      'Загружаем…');
+
+    Journal.read(journal).then(({ records }) => {
+      let total = 0;
+      for (const r of records) {
+        if (String(r.data['статус']).trim() === 'отменена') continue;
+        const id = String(r.data['id_операции'] || '');
+        const ref = String(r.data['id_исходной_операции'] || '').trim();
+        if (id === rootId || ref === rootId) {
+          total += Operations.sumOf(op, r.data);
+        }
+      }
+      rootTotal = total;
+      rootTotalValueEl.textContent = money(rootTotal);
+      recomputePreview();
+    }).catch((err) => {
+      rootTotalError = err;
+      rootTotalValueEl.textContent = 'не удалось загрузить — попробуйте обновить';
+      recomputePreview();
+    });
+
+    // Сводка исходной (read-only).
+    function row(label, value) {
+      return h('div', { class: 'op-summary-row' },
+        h('span', { class: 'op-summary-label' }, label),
+        h('span', { class: 'op-summary-value' }, value));
+    }
+    // Если корректируем уже корректировку — отдельной строкой показываем
+    // корень цепочки, чтобы основатель понимал: новая запись будет
+    // ссылаться на корень, не на эту промежуточную (§16.3). Главное
+    // число в сводке — «Текущий итог по корню» (§16.5), а НЕ сумма
+    // строки: в плоской цепочке строка-корректировка несёт только
+    // дельту, и её сумма не равна тому, что увидит витрина.
+    const summaryRows = [
+      row('Тип операции', op.label),
+      row('ID этой записи', originalId),
+    ];
+    if (isChainedCorrection) {
+      summaryRows.push(row('Корень цепочки', rootId));
+    }
+    summaryRows.push(
+      row('Описание', op.describe(originalData)),
+      h('div', { class: 'op-summary-row' },
+        h('span', { class: 'op-summary-label' }, 'Текущий итог по корню'),
+        rootTotalValueEl));
+    const summary = h('div', { class: 'op-summary' }, ...summaryRows);
+
+    // Поле дельты + итог.
+    const deltaInput = h('input', {
+      class: 'field-input', type: 'number', step: '1',
+      placeholder: 'например, -2000',
+    });
+    const sumPreview = h('div', { class: 'field-hint' },
+      'Итог после корректировки: загружаем итог по корню…');
+    function recomputePreview() {
+      const raw = deltaInput.value;
+      if (raw === '' || raw === '-') {
+        sumPreview.textContent = rootTotal == null
+          ? 'Итог после корректировки: загружаем итог по корню…'
+          : 'Итог после корректировки: —';
+        return;
+      }
+      const delta = Number(raw);
+      if (isNaN(delta)) {
+        sumPreview.textContent = 'Дельта должна быть числом.';
+        return;
+      }
+      if (rootTotal == null) {
+        if (rootTotalError) {
+          sumPreview.textContent =
+            'Не удалось загрузить итог по корню — обновите страницу. ' +
+            'Без него превью посчитать нельзя.';
+        } else {
+          sumPreview.textContent = 'Загружаем итог по корню…';
+        }
+        return;
+      }
+      const total = rootTotal + delta;
+      const sign = delta > 0 ? '+' : '−';
+      sumPreview.textContent = 'Итог после корректировки: ' +
+        money(rootTotal) + ' ' + sign + ' ' + money(Math.abs(delta)) +
+        ' = ' + money(total);
+    }
+    deltaInput.addEventListener('input', recomputePreview);
+
+    const reasonInput = textarea(
+      'Например: «Гость доплатил 2000 ₽ за поздний выезд»');
+
+    const fDelta = field('Дельта ₽',
+      h('div', { class: 'field-stack' }, deltaInput, sumPreview),
+      { aside: 'отрицательная — убавить' });
+    const fReason = field('Причина корректировки', reasonInput,
+      { aside: 'обязательно' });
+
+    function validate() {
+      [fDelta, fReason].forEach(clearError);
+      let ok = true;
+      const raw = deltaInput.value.trim();
+      if (raw === '') {
+        showError(fDelta, 'Укажите дельту'); ok = false;
+      } else {
+        const delta = Number(raw);
+        if (isNaN(delta)) {
+          showError(fDelta, 'Дельта должна быть числом'); ok = false;
+        } else if (delta === 0) {
+          showError(fDelta, 'Дельта 0 — нечего корректировать'); ok = false;
+        }
+      }
+      if (!reasonInput.value.trim()) {
+        showError(fReason, 'Опишите причину корректировки'); ok = false;
+      }
+      return ok;
+    }
+
+    function collect() {
+      const delta = Number(deltaInput.value);
+      const reason = reasonInput.value.trim();
+      // Стартуем от исходной и переопределяем только то, что должно
+      // отличаться у корректирующей записи. Структурные поля (объект,
+      // получатель, дата_операции) сохраняются — корректировка не
+      // «передумывает» операцию, а правит её цифру.
+      const row = { ...originalData };
+      // id_операции — пусто, allocates в Journal.appendOperation
+      // через сквозной NNN (ADR-009).
+      row['id_операции'] = '';
+      row['client_uuid'] = '';                            // sender проставит
+      row['дата_внесения'] = nowISO();                    // ADR-007
+      // Автор корректировки — текущий основатель, не автор исходной.
+      // Имя колонки определяется журналом (id_менеджера vs
+      // id_менеджера_внёс) — берём то, что было в исходной строке.
+      if ('id_менеджера_внёс' in originalData) {
+        row['id_менеджера_внёс'] = employee['id_сотрудника'];
+      } else {
+        row['id_менеджера'] = employee['id_сотрудника'];
+      }
+      row[sumField] = delta;                              // §16.3, Морган #8
+      // §16.3 v1.7: ссылка на корень, не на непосредственного предка.
+      // rootId вычислен наверху функции; для оригинала = его id, для
+      // корректировки = её id_исходной_операции (тоже id корня).
+      row['id_исходной_операции'] = rootId;
+      row['комментарий'] = 'КОРРЕКТИРОВКА к ' + rootId + ': ' + reason;
+      row['статус'] = 'активна';
+      row['отменена_кем'] = '';
+      row['отменена_когда'] = '';
+
+      const sign = delta > 0 ? '+' : '−';
+      const shortDesc = 'Корректировка к ' + rootId + ' (' + op.label + '): ' +
+        sign + money(Math.abs(delta));
+      return {
+        journalSheet: journal,
+        opKey: op.key,
+        row,
+        managerId: employee['id_сотрудника'],
+        shortDesc,
+      };
+    }
+
+    const submitBtn = h('button',
+      { class: 'btn-primary btn-auto', type: 'submit' }, 'Сохранить корректировку');
+    const cancelBtn = h('button',
+      { class: 'btn-ghost', type: 'button' }, 'Отмена');
+    cancelBtn.addEventListener('click', () => opts.onExit());
+    const footer = h('div', { class: 'op-footer' },
+      h('span', { class: 'op-footer-hint' },
+        'Исходная строка не меняется. Корректировка — отдельная запись ' +
+        'в том же журнале со ссылкой на исходную.'),
+      h('div', { class: 'op-footer-actions' }, cancelBtn, submitBtn));
+
+    const form = h('form', { class: 'op-form' },
+      summary, fDelta, fReason,
+      h('div', { class: 'op-divider' }), footer);
+
+    form.addEventListener('keydown', (e) => {
+      if (e.altKey && e.key === 'Enter') {
+        e.preventDefault();
+        form.requestSubmit();
+      }
+    });
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      submitBtn.disabled = true;
+      if (!validate()) { submitBtn.disabled = false; return; }
+      Queue.add('корректировка', collect());
+      opts.onExit();
+    });
+
+    return Screens.formScreen({
+      employee, title: 'Корректировка',
+      subtitle: 'Исходная запись остаётся как есть. Новая строка добавится ' +
+        'в тот же журнал и встанет «поверх» суммой-дельтой.',
+      breadcrumb: 'Корректировки',
+      content: form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
+  // ====================== «Помощь» (§5.11, TICKET-6.2) =================
+  // Полноэкранный экран справки. Доступен по кнопке «?» в шапке — со
+  // всех экранов (главный + любая форма). Контент — раскрывающиеся
+  // блоки <details>: короткий заголовок + развёрнутое описание. Чтобы
+  // дополнять описание форм было дёшево, контент держим как массив
+  // объектов; раздел «Корректировки» добавится сюда же, когда TICKET-6.1
+  // примут (тикет 6.2: «до тех пор без него»).
+  function openПомощь(opts) {
+    const employee = opts.employee;
+    const founder = String(employee['роль'] || '').trim().toLowerCase()
+      .replace(/\s/g, '');
+    const isFounder = founder === 'ген.дир' || founder === 'основатель';
+
+    // [title, paragraphs[], founderOnly?]
+    const FORMS_HELP = [
+      ['+ Заселение',
+        ['Оформление новой брони. Заполните даты заезда/выезда, объект, ' +
+         'канал брони, сумму бронирования и комиссию площадки. Программа ' +
+         'сама посчитает чистую выручку и долю Ренто.',
+         'Внизу — блок распределения: куда уходит каждая часть денег ' +
+         '(собственнику напрямую, на счёт Ренто, горничной налом и т.п.). ' +
+         'Касса задаётся типом строки распределения. Сумма всех строк ' +
+         'должна сойтись с чистой выручкой — индикатор подсветит, ' +
+         'если что-то не сходится.']],
+      ['+ Уборка',
+        ['Запись об уборке: дата, горничная, объект, тип (плановая ' +
+         'или генеральная). Сумма подставится автоматически из ставки ' +
+         'объекта; если её перебить — нужно дать комментарий, что ' +
+         'произошло (например, доплата за грязь).']],
+      ['+ Мастер',
+        ['Работа мастера: «выход» (объект обязателен) или «материалы» ' +
+         '(нужно описание, что куплено). Дефолтная ставка мастера ' +
+         'подставится для выходов; материалы — сумма руками.']],
+      ['+ Хоз-расход',
+        ['Расходы по объекту: средства уборки, мелочёвка, расходники. ' +
+         'Категория обязательна. Получатель — горничная, мастер или ' +
+         'сотрудник; собственника здесь нет (для денег собственнику ' +
+         'есть свой канал — доход от заселений).',
+         'Если нужной категории нет в списке — кнопка ' +
+         '«+ предложить новую категорию»: основатель потом подтвердит ' +
+         'её в Sheets.']],
+      ['+ Прочее',
+        ['Доходы и расходы без привязки к объекту: возвраты, бонусы, ' +
+         'мелкие операционные траты, по которым нет отдельной формы. ' +
+         'Тип (доход/расход) выбираете сверху; список категорий ' +
+         'подстраивается под выбор.']],
+      ['+ Выплата',
+        ['Только для основателя. Выплата получателю со счёта Ренто. ' +
+         'Под получателем — подсказка по текущему долгу: сколько ' +
+         'начислено и сколько уже выплачено. Для выплаты собственнику ' +
+         'обязательно указать объект — сальдо считается по каждому ' +
+         'объекту отдельно.'], true],
+      ['+ Batch площадки',
+        ['Только для основателя. Разноска batch-выплаты от Авито/Яндекса ' +
+         '— одной операцией закрывается несколько броней. ' +
+         'Указываете канал, сумму поступления и (при необходимости) ' +
+         'комиссию площадки.'], true],
+    ];
+
+    const MISTAKES = [
+      ['Связь упала, операция не отправилась',
+        'Программа сама положит её в очередь и повторит. Не нужно ' +
+        'повторно нажимать «Сохранить» — защита от дублей сработает по ' +
+        'внутреннему идентификатору, но без неё всё равно лучше не ' +
+        'плодить попытки. Следите за индикатором очереди в шапке: пока ' +
+        'там «Отправляется N» — данные ещё не в таблице.'],
+      ['Сумма уборки/выплаты введена ошибочно',
+        'Сегодняшние операции можно откатить из секции «Сегодня» на ' +
+        'главном экране (отметить чекбоксы и «Откатить выбранные»). ' +
+        'Старше дня — только корректировка задним числом, это умеет ' +
+        'основатель.'],
+      ['Не открывается форма «+ Выплата» / «+ Batch» / «Отчёт собственнику»',
+        'Эти формы доступны только основателю. Менеджеру они не ' +
+        'нужны и в его меню не показываются.'],
+      ['Перебитая сумма уборки — требует комментарий',
+        'Если сумма уборки отличается от ставки объекта, программа ' +
+        'попросит комментарий. Это специально: чтобы потом было видно, ' +
+        'почему именно вы её изменили.'],
+    ];
+
+    function detailsBlock(summary, ...nodes) {
+      const det = h('details', { class: 'help-details' },
+        h('summary', { class: 'help-summary' }, summary),
+        ...nodes);
+      return det;
+    }
+
+    const formsBlocks = FORMS_HELP
+      .filter(([, , founderOnly]) => !founderOnly || isFounder)
+      .map(([title, paragraphs]) => {
+        const body = h('div', { class: 'help-body' },
+          ...paragraphs.map((p) => h('p', { class: 'help-text' }, p)));
+        return detailsBlock(title, body);
+      });
+
+    const mistakesBlocks = MISTAKES.map(([title, text]) =>
+      detailsBlock(title, h('div', { class: 'help-body' },
+        h('p', { class: 'help-text' }, text))));
+
+    const fallbackBlock = detailsBlock('Что делать, если интерфейс не отвечает',
+      h('div', { class: 'help-body' },
+        h('p', { class: 'help-text' },
+          'Если страница не открывается или операции висят в очереди ' +
+          'и не уходят больше 15 минут — сообщите Абдуле (tech lead). ' +
+          'Параллельно операции можно вносить руками в Google Sheets — ' +
+          'у каждого менеджера есть к нему доступ.'),
+        h('p', { class: 'help-text' },
+          'Подробная инструкция «как писать руками» — отдельным ' +
+          'каналом от Абдулы (карта 9 журналов, обязательные поля, ' +
+          'формат MAN-*-id, регуляризация после восстановления). ' +
+          'Главное правило: id операции в ручной записи начинается с ' +
+          'MAN- (не OP-), чтобы потом её можно было «легализовать» в ' +
+          'обычный поток. Для выплаты собственнику обязательно ' +
+          'указывайте стабильный id объекта (OBJ-..., не версия) в ' +
+          'колонке id_объекта.')));
+
+    const contactsBlock = detailsBlock('Куда писать вопросы',
+      h('div', { class: 'help-body' },
+        h('p', { class: 'help-text' },
+          'Вопросы по работе интерфейса (что-то не открывается, ' +
+          'непонятное поведение формы) — Абдуле (tech lead).'),
+        h('p', { class: 'help-text' },
+          'Вопросы по финансовой логике (что куда относится, как ' +
+          'считается категория, что в каком отчёте) — Морган.'),
+        h('p', { class: 'help-text muted' },
+          'Контакты для прямой связи (email/Telegram) добавит фаундер ' +
+          'перед запуском.')));
+
+    const content = h('div', { class: 'help-content' },
+      h('div', { class: 'help-section' },
+        h('h2', { class: 'h2' }, 'Формы ввода'),
+        ...formsBlocks),
+      h('div', { class: 'help-section' },
+        h('h2', { class: 'h2' }, 'Частые ошибки'),
+        ...mistakesBlocks),
+      h('div', { class: 'help-section' },
+        h('h2', { class: 'h2' }, 'Если что-то сломалось'),
+        fallbackBlock,
+        contactsBlock));
+
+    return Screens.formScreen({
+      employee, title: 'Помощь',
+      subtitle: 'Короткая памятка по формам и частым ошибкам. ' +
+        'Раскройте нужный блок, чтобы посмотреть подробности.',
+      breadcrumb: 'Справка',
+      content,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+      // На самой странице помощи кнопка «?» в шапке не нужна —
+      // appHeader не отрендерит её, если onOpenHelp не передан.
+    });
+  }
+
+  return {
+    openУборка, openМастер, openХозРасход, openПрочее, openBatch, openВыплата,
+    openЗаселение, openОтчётСобственнику,
+    openПоискОпераций, openКорректировка,
+    openПомощь,
+  };
+})();
