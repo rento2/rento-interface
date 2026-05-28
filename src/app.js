@@ -169,11 +169,22 @@
     'отчёт_собственнику': Forms.openОтчётСобственнику,
     'поиск_операций': Forms.openПоискОпераций,
     'помощь': Forms.openПомощь,
+    // Инкремент 8 (ADR-026): формы записи в справочники.
+    'новый_собственник': Forms.openНовыйСобственник,
+    'новая_квартира': Forms.openНоваяКвартира,
+    'новый_сотрудник': Forms.openНовыйСотрудник,
+    'новая_горничная': Forms.openНоваяГорничная,
   };
 
   // Формы только для основателя, которых нет в реестре операций
   // (Operations.get(...).founderOnly закрывает только записи в журнал).
-  const FOUNDER_ONLY_FORMS = new Set(['отчёт_собственнику', 'поиск_операций']);
+  // ADR-026 / TICKET-8.4: «отчёт_собственнику» и «поиск_операций»
+  // доступны обоим — приватности между пользователями нет.
+  // 28.05.2026 (доработка): справочники (8.1–8.3) тоже доступны всем
+  // сотрудникам (решение Абдулы) — не только основателю. Founder-only
+  // через FOUNDER_ONLY_FORMS не закрывается; финансовые формы
+  // (Выплата/Batch) остаются за основателем через Operations.founderOnly.
+  const FOUNDER_ONLY_FORMS = new Set();
 
   // Полноэкранный экран формы операции (ADR-006). Отмена, «← На главную»
   // и успешная отправка возвращают на главный экран через showMain.
@@ -439,6 +450,78 @@
       return {};
     });
 
+    // Запись в справочник (Инкремент 8 / ADR-026): собственник, квартира,
+    // сотрудник. Sender общий — формы передают `sheet`, `row`,
+    // `keyColumns` (дедуп при ретраях), `idPrefix`/`idField` (для
+    // генерации стабильного id из текущего среза справочника),
+    // опционально `versionedField`/`versionSuffix` (для версионированных
+    // листов — объекты/сотрудники, id_версии = <id>-V1).
+    //
+    // Идемпотентность: appendUnique по содержательному ключу (например
+    // ['фио','телефон']) — при ретрае sender прочитает свежий лист,
+    // найдёт уже записанную строку → не запишет повторно. Дедуп по id
+    // не подходит — id новый каждый раз. Дубли с одинаковыми
+    // содержательными полями (двое однофамильцев без телефона) на
+    // уровне формы предупреждаются хинтом, на запись не блокируются —
+    // решение основателя.
+    //
+    // После committed app.js делает Cache.refresh() (см. Queue.onCommitted
+    // ниже), чтобы новая запись сразу появлялась в выпадашках.
+    async function refSender(formData) {
+      const sheet = formData.sheet;
+      const { headers, records } = await Journal.read(sheet);
+      const idField = formData.idField;
+
+      // Дубль по содержательному ключу — на ретрае возвращаем
+      // существующий id, ничего не пишем.
+      const dup = records.find((r) => formData.keyColumns.every(
+        (c) => String(r.data[c] || '').trim() === String(formData.row[c] || '').trim()));
+      if (dup) {
+        await Journal.logAction({
+          'timestamp': new Date().toISOString(),
+          'id_менеджера': formData.managerId,
+          'действие': 'создание',
+          'id_операции': dup.data[idField] || '',
+          'тип_операции': formData.logType,
+          'краткое_описание': formData.shortDesc + ' (дубль по ключу, не записан)',
+        });
+        return { id: dup.data[idField] };
+      }
+
+      // Свежий id из следующего свободного NNN по стабильному полю.
+      // Для версионированных листов набор стабильных id может содержать
+      // дубли (V1+V2) — Forms.nextRefId считает по максимуму NNN, дубли
+      // не мешают (мы ищем max, не уникальный счёт).
+      const newId = Forms.nextRefId(records.map((r) => r.data),
+        formData.idPrefix, idField);
+      const fullRow = { ...formData.row, [idField]: newId };
+      if (formData.versionedField) {
+        fullRow[formData.versionedField] = newId + (formData.versionSuffix || '-V1');
+      }
+
+      await Sheets.appendRow(sheet, headers.map(
+        (h) => fullRow[h] !== undefined && fullRow[h] !== null ? fullRow[h] : ''));
+
+      // Лог факта добавления справочной записи: действие = «создание»,
+      // тип_операции = «собственник»/«квартира»/«сотрудник», id_операции
+      // = свежесгенерированный id справочника (не OP-*, у справочников
+      // своё пространство). Дедуп logAction по (id_операции, действие)
+      // — id уникален, дубля не будет.
+      await Journal.logAction({
+        'timestamp': new Date().toISOString(),
+        'id_менеджера': formData.managerId,
+        'действие': 'создание',
+        'id_операции': newId,
+        'тип_операции': formData.logType,
+        'краткое_описание': formData.shortDesc,
+      });
+      return { id: newId };
+    }
+    Queue.registerSender('новый_собственник', refSender);
+    Queue.registerSender('новая_квартира', refSender);
+    Queue.registerSender('новый_сотрудник', refSender);
+    Queue.registerSender('новая_горничная', refSender);
+
     // Предложение новой категории (§14, TICKET-3.6). Пишет заявку в
     // _категории_на_модерации и аудит в _лог_действий. У листа модерации
     // нет client_uuid — дедуп по смыслу записи (idempotent на ретраях).
@@ -565,9 +648,17 @@
     registerSenders();
     Queue.setAuthErrorHandler(handleSheetsError);
     Queue.onChange(refreshIndicator);
-    Queue.onCommitted(() => {
+    Queue.onCommitted((item) => {
       refreshIndicator();
       if (todayCtl) todayCtl.reload();
+      // Инкремент 8 (ADR-026): после успешной записи в справочник
+      // обновить кеш — иначе выпадашки в других формах увидят новую
+      // запись только после ручного «Обновить справочники». Тихий
+      // refresh: если упадёт — handleSheetsError разберёт.
+      const REF_TYPES = ['новый_собственник', 'новая_квартира', 'новый_сотрудник', 'новая_горничная'];
+      if (item && REF_TYPES.includes(item.formType)) {
+        Cache.refresh().catch(handleSheetsError);
+      }
     });
     // Индикатор тикает раз в секунду — для обратного отсчёта ретрая (§5.3).
     setInterval(refreshIndicator, 1000);

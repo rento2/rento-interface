@@ -2960,46 +2960,13 @@ window.Forms = (() => {
       detailsBlock(title, h('div', { class: 'help-body' },
         h('p', { class: 'help-text' }, text))));
 
-    const fallbackBlock = detailsBlock('Что делать, если интерфейс не отвечает',
-      h('div', { class: 'help-body' },
-        h('p', { class: 'help-text' },
-          'Если страница не открывается или операции висят в очереди ' +
-          'и не уходят больше 15 минут — сообщите Абдуле (tech lead). ' +
-          'Параллельно операции можно вносить руками в Google Sheets — ' +
-          'у каждого менеджера есть к нему доступ.'),
-        h('p', { class: 'help-text' },
-          'Подробная инструкция «как писать руками» — отдельным ' +
-          'каналом от Абдулы (карта 9 журналов, обязательные поля, ' +
-          'формат MAN-*-id, регуляризация после восстановления). ' +
-          'Главное правило: id операции в ручной записи начинается с ' +
-          'MAN- (не OP-), чтобы потом её можно было «легализовать» в ' +
-          'обычный поток. Для выплаты собственнику обязательно ' +
-          'указывайте стабильный id объекта (OBJ-..., не версия) в ' +
-          'колонке id_объекта.')));
-
-    const contactsBlock = detailsBlock('Куда писать вопросы',
-      h('div', { class: 'help-body' },
-        h('p', { class: 'help-text' },
-          'Вопросы по работе интерфейса (что-то не открывается, ' +
-          'непонятное поведение формы) — Абдуле (tech lead).'),
-        h('p', { class: 'help-text' },
-          'Вопросы по финансовой логике (что куда относится, как ' +
-          'считается категория, что в каком отчёте) — Морган.'),
-        h('p', { class: 'help-text muted' },
-          'Контакты для прямой связи (email/Telegram) добавит фаундер ' +
-          'перед запуском.')));
-
     const content = h('div', { class: 'help-content' },
       h('div', { class: 'help-section' },
         h('h2', { class: 'h2' }, 'Формы ввода'),
         ...formsBlocks),
       h('div', { class: 'help-section' },
         h('h2', { class: 'h2' }, 'Частые ошибки'),
-        ...mistakesBlocks),
-      h('div', { class: 'help-section' },
-        h('h2', { class: 'h2' }, 'Если что-то сломалось'),
-        fallbackBlock,
-        contactsBlock));
+        ...mistakesBlocks));
 
     return Screens.formScreen({
       employee, title: 'Помощь',
@@ -3015,10 +2982,535 @@ window.Forms = (() => {
     });
   }
 
+  // ============== Справочники: формы Инкремента 8 (ADR-026) ============
+  //
+  // Эти формы пишут НЕ в журналы, а в справочники (`спр_собственники`,
+  // `спр_объекты`, `спр_сотрудники`). Только основатель (через
+  // FOUNDER_ONLY_FORMS в app.js). Записывают единичную строку через
+  // `Journal.appendUnique` (дедуп по содержательному ключу — защита от
+  // ретраев очереди); ID нового справочного объекта генерится
+  // sender'ом по факту чтения свежего листа (см. `nextRefId` ниже).
+  //
+  // ID-генератор: следующий свободный NNN среди записей с тем же
+  // префиксом в указанной колонке. Игнорирует пустые значения.
+  // Поддерживает любую длину NNN (>=1 цифр), формат padStart(3).
+  function nextRefId(rows, prefix, idField) {
+    const re = new RegExp('^' + prefix + '-(\\d+)$');
+    let max = 0;
+    for (const r of rows) {
+      const m = re.exec(String(r[idField] || '').trim());
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (n > max) max = n;
+      }
+    }
+    return prefix + '-' + String(max + 1).padStart(3, '0');
+  }
+
+  // ===================== «+ Собственник» (TICKET-8.1) ==================
+  // ADR-026 (упрощено решением Абдулы 28.05.2026): реквизиты
+  // опционально, форма пишет только в `спр_собственники` одной строкой.
+  // Реквизиты позже отдельной формой если понадобится.
+  //
+  // Обязательно: ФИО. Опционально: телефон, email, мессенджер,
+  // комментарий. Системные поля: id_собственника (генерится в sender,
+  // OWN-NNN), дата_первого_договора (сегодня — иначе витрина может
+  // плохо считать «новых собственников за период»), статус (активный).
+  function openНовыйСобственник(opts) {
+    const employee = opts.employee;
+    const formType = 'новый_собственник';
+
+    const fioInput = textInput('Иванов Иван Иванович');
+    const phoneInput = textInput('+7 999 123 45 67');
+    const messengerInput = textInput('Telegram @ivan / MAX @ivan');
+    const emailInput = textInput('ivan@example.com');
+    const commentInput = textarea('Заметки по собственнику (необязательно)');
+
+    const fFio = field('ФИО', fioInput);
+    const fPhone = field('Телефон', phoneInput, { aside: 'необязательно' });
+    const fMsg = field('Мессенджер', messengerInput, { aside: 'необязательно' });
+    const fEmail = field('Email', emailInput, { aside: 'необязательно' });
+    const fComment = field('Комментарий', commentInput, { aside: 'необязательно' });
+
+    // Предупреждение по дублю ФИО (Cache.get кеш, читается мгновенно).
+    // Не блокирует сохранение — это явный выбор основателя (двое с
+    // одинаковыми ФИО возможны, хоть и редко).
+    const dupHint = h('div', { class: 'field-hint' });
+    function checkDup() {
+      const fio = fioInput.value.trim().toLowerCase();
+      if (!fio) { dupHint.textContent = ''; return; }
+      const dup = Cache.get('спр_собственники')
+        .find((r) => String(r['фио'] || '').trim().toLowerCase() === fio);
+      dupHint.textContent = dup
+        ? '⚠ Уже есть собственник с таким ФИО: ' + dup['id_собственника'] +
+          '. Если это другой человек — можно завести; иначе отмените.'
+        : '';
+    }
+    fioInput.addEventListener('input', checkDup);
+    fFio._error.style.display = '';
+    fFio.append(dupHint);
+
+    const draftNote = h('div', { class: 'draft-note', style: 'display:none' });
+
+    function snapshot() {
+      return {
+        фио: fioInput.value, телефон: phoneInput.value,
+        мессенджер: messengerInput.value, email: emailInput.value,
+        комментарий: commentInput.value,
+      };
+    }
+    function restore(d) {
+      fioInput.value = d.фио || '';
+      phoneInput.value = d.телефон || '';
+      messengerInput.value = d.мессенджер || '';
+      emailInput.value = d.email || '';
+      commentInput.value = d.комментарий || '';
+      checkDup();
+    }
+    function validate() {
+      [fFio].forEach(clearError);
+      if (!fioInput.value.trim()) {
+        showError(fFio, 'ФИО обязательно');
+        return false;
+      }
+      return true;
+    }
+    function collect() {
+      const fio = fioInput.value.trim();
+      return {
+        sheet: 'спр_собственники',
+        keyColumns: ['фио', 'телефон'],
+        row: {
+          'фио': fio,
+          'телефон': phoneInput.value.trim(),
+          'мессенджер_основной': messengerInput.value.trim(),
+          'email': emailInput.value.trim(),
+          'дата_первого_договора': today(),
+          'статус': 'активный',
+          'комментарий': commentInput.value.trim(),
+        },
+        idPrefix: 'OWN',
+        idField: 'id_собственника',
+        logType: 'собственник',
+        shortDesc: 'Новый собственник: ' + fio,
+        managerId: employee['id_сотрудника'],
+      };
+    }
+
+    const built = composeForm({
+      formType, opts, draftNote, queueKey: 'новый_собственник',
+      validate, collect,
+      fieldNodes: [fFio, fPhone, fMsg, fEmail, fComment],
+    });
+    setupDraft(formType, built.form, snapshot, restore, draftNote);
+
+    return Screens.formScreen({
+      employee, title: '+ Собственник',
+      subtitle: 'Новая запись в спр_собственники. После сохранения ' +
+        'собственник появится в выпадашках (квартира, выплата).',
+      breadcrumb: 'Справочники',
+      content: built.form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
+  // ===================== «+ Квартира» (TICKET-8.2) =====================
+  // Самая строгая форма (ADR-026): собственник из списка (не текст),
+  // модель из списка, фикс обязателен для M4, при совпадении адреса —
+  // предупреждение «новый объект или вернулась старая?». Создаёт
+  // только V1; версионирование V2+ — вручную в Sheets (зафиксированный
+  // риск ADR-026).
+  function openНоваяКвартира(opts) {
+    const employee = opts.employee;
+    const formType = 'новая_квартира';
+
+    const owners = Cache.forDropdown('спр_собственники');
+    const models = Cache.get('спр_модели_расчёта');  // активность — нет поля, берём все
+    const categories = Cache.forDropdown('спр_категории_объектов');
+
+    const ownerSelect = selectInput();
+    fillSelect(ownerSelect, owners.map((o) => ({
+      value: o['id_собственника'], text: o['фио'],
+    })), owners.length ? 'Выберите…' : '— нет собственников, заведите сначала —');
+
+    const shortNameInput = textInput('Кривоарбатский 1-5');
+    const addressInput = textInput('Москва, ул. Кривоарбатская, д.1 кв.5');
+
+    const modelSelect = selectInput();
+    fillSelect(modelSelect, models.map((m) => ({
+      value: m['id_модели'],
+      text: m['название'] + ' (' + m['тип'] + ')',
+    })));
+
+    const fixInput = numberInput();
+    const categorySelect = selectInput();
+    fillSelect(categorySelect, categories.map((c) => ({
+      value: c['id_категории'], text: c['название'],
+    })));
+    const commentInput = textarea('Заметки по объекту (необязательно)');
+
+    const fOwner = field('Собственник', ownerSelect);
+    const fShortName = field('Короткое название', shortNameInput,
+      { aside: 'для выпадашек' });
+    const fAddress = field('Полный адрес', addressInput);
+    const fModel = field('Модель расчёта', modelSelect);
+    const fFix = field('Фикс ₽/мес', fixInput, { aside: 'для модели Фикс' });
+    fFix.style.display = 'none';
+    const fCategory = field('Категория объекта', categorySelect,
+      { aside: 'необязательно' });
+    const fComment = field('Комментарий', commentInput,
+      { aside: 'необязательно' });
+
+    // Фикс показывается только для модели типа «Фикс».
+    function isModelFix() {
+      const m = models.find((r) => r['id_модели'] === modelSelect.value);
+      return m && String(m['тип']).trim().toLowerCase() === 'фикс';
+    }
+    modelSelect.addEventListener('change', () => {
+      fFix.style.display = isModelFix() ? '' : 'none';
+      if (!isModelFix()) fixInput.value = '';
+    });
+
+    // Предупреждение по дублю адреса (полный или короткое название).
+    // Не блокирует — пользователь подтверждает в модалке при сохранении.
+    const dupHint = h('div', { class: 'field-hint' });
+    function checkDupAddr() {
+      const addr = addressInput.value.trim().toLowerCase();
+      if (!addr) { dupHint.textContent = ''; return; }
+      const dup = Cache.get('спр_объекты').find((r) =>
+        String(r['адрес_полный'] || '').trim().toLowerCase() === addr);
+      dupHint.textContent = dup
+        ? '⚠ Адрес уже есть у объекта ' + dup['id_объекта'] +
+          ' («' + dup['название_короткое'] + '»). Новый объект или ' +
+          'вернулась старая квартира?'
+        : '';
+    }
+    addressInput.addEventListener('input', checkDupAddr);
+    fAddress.append(dupHint);
+
+    // Версионирование — банер с подсказкой (риск ADR-026).
+    const versionNote = h('div', { class: 'draft-note' },
+      'Эта форма создаёт НОВУЮ квартиру (версию V1). Для смены условий ' +
+      'существующего объекта (новый % собственнику, новая модель) — ' +
+      'не пользуйтесь этой формой, заведите V2 вручную в листе ' +
+      'спр_объекты (закрыть V1 датой «действует_по», добавить V2 с тем ' +
+      'же id_объекта, новым id_версии).');
+
+    const draftNote = h('div', { class: 'draft-note', style: 'display:none' });
+
+    function snapshot() {
+      return {
+        собственник: ownerSelect.value, короткое: shortNameInput.value,
+        адрес: addressInput.value, модель: modelSelect.value,
+        фикс: fixInput.value, категория: categorySelect.value,
+        комментарий: commentInput.value,
+      };
+    }
+    function restore(d) {
+      ownerSelect.value = d.собственник || '';
+      shortNameInput.value = d.короткое || '';
+      addressInput.value = d.адрес || '';
+      modelSelect.value = d.модель || '';
+      fFix.style.display = isModelFix() ? '' : 'none';
+      fixInput.value = d.фикс || '';
+      categorySelect.value = d.категория || '';
+      commentInput.value = d.комментарий || '';
+      checkDupAddr();
+    }
+    function validate() {
+      [fOwner, fShortName, fAddress, fModel, fFix].forEach(clearError);
+      let ok = true;
+      if (!ownerSelect.value) {
+        showError(fOwner, 'Выберите собственника'); ok = false;
+      }
+      if (!shortNameInput.value.trim()) {
+        showError(fShortName, 'Короткое название обязательно'); ok = false;
+      }
+      if (!addressInput.value.trim()) {
+        showError(fAddress, 'Полный адрес обязательно'); ok = false;
+      }
+      if (!modelSelect.value) {
+        showError(fModel, 'Выберите модель расчёта'); ok = false;
+      } else if (isModelFix() && !(num(fixInput.value) > 0)) {
+        showError(fFix, 'Для модели Фикс — фикс ₽/мес обязателен и > 0');
+        ok = false;
+      }
+      // Дубль адреса — модалка-подтверждение, не блок (тикет 8.2).
+      if (ok && dupHint.textContent) {
+        if (!confirm(dupHint.textContent +
+          '\n\nВсё равно создать новый объект?')) {
+          ok = false;
+        }
+      }
+      return ok;
+    }
+    function collect() {
+      const fix = isModelFix() ? num(fixInput.value) : '';
+      return {
+        sheet: 'спр_объекты',
+        keyColumns: ['адрес_полный', 'id_собственника'],
+        row: {
+          // id_версии и id_объекта генерятся в sender (sender знает
+          // префикс и поля; sender читает справочник и берёт max+1).
+          // Здесь не подставляем — оставляем sender'у.
+          'название_короткое': shortNameInput.value.trim(),
+          'адрес_полный': addressInput.value.trim(),
+          'действует_с': today(),
+          'действует_по': '',
+          'id_модели': modelSelect.value,
+          'фикс_₽': fix,
+          'id_собственника': ownerSelect.value,
+          'id_категории_объекта': categorySelect.value,
+          'статус': 'активен',
+          'комментарий': commentInput.value.trim(),
+        },
+        // Объект — версионированный (id_объекта + id_версии).
+        // Sender генерит OBJ-NNN (max по id_объекта дедупом по
+        // стабильным id) и составляет id_версии = OBJ-NNN-V1.
+        idPrefix: 'OBJ',
+        idField: 'id_объекта',
+        versionedField: 'id_версии',
+        versionSuffix: '-V1',
+        logType: 'квартира',
+        shortDesc: 'Новая квартира: ' + shortNameInput.value.trim(),
+        managerId: employee['id_сотрудника'],
+      };
+    }
+
+    const built = composeForm({
+      formType, opts, draftNote, queueKey: 'новая_квартира',
+      validate, collect,
+      topNote: versionNote,
+      fieldNodes: [fOwner, fShortName, fAddress, fModel, fFix, fCategory, fComment],
+    });
+    setupDraft(formType, built.form, snapshot, restore, draftNote);
+
+    return Screens.formScreen({
+      employee, title: '+ Квартира',
+      subtitle: 'Новая запись в спр_объекты (версия V1). После сохранения ' +
+        'квартира появится в выпадашках операций.',
+      breadcrumb: 'Справочники',
+      content: built.form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
+  // ===================== «+ Сотрудник» (TICKET-8.3) ====================
+  // Минимально по тикету: id (генерится EMP-NNN), имя, роль —
+  // обязательны. Системные: id_версии=EMP-NNN-V1, действует_с=сегодня,
+  // статус=активный. Остальные поля справочника (телефон/ставка/тип) —
+  // опционально, фаундер потом дополнит руками если надо.
+  function openНовыйСотрудник(opts) {
+    const employee = opts.employee;
+    const formType = 'новый_сотрудник';
+
+    const fioInput = textInput('Иванов Иван Иванович');
+    const roleSelect = selectInput();
+    fillSelect(roleSelect, [
+      { value: 'менеджер', text: 'менеджер' },
+      { value: 'ген.дир', text: 'ген.дир' },
+      { value: 'маркетолог', text: 'маркетолог' },
+      { value: 'бухгалтер', text: 'бухгалтер' },
+      { value: 'другое', text: 'другое' },
+    ]);
+    const phoneInput = textInput('+7 999 123 45 67');
+    const rateInput = numberInput();
+    const rateTypeSelect = selectInput();
+    fillSelect(rateTypeSelect, [
+      { value: 'за смену', text: 'за смену' },
+      { value: 'в месяц', text: 'в месяц' },
+    ]);
+    const commentInput = textarea('Заметки (необязательно)');
+
+    const fFio = field('ФИО', fioInput);
+    const fRole = field('Роль', roleSelect);
+    const fPhone = field('Телефон', phoneInput, { aside: 'необязательно' });
+    const fRate = field('Ставка ₽', rateInput, { aside: 'необязательно' });
+    const fRateType = field('Тип ставки', rateTypeSelect,
+      { aside: 'необязательно' });
+    const fComment = field('Комментарий', commentInput, { aside: 'необязательно' });
+
+    const draftNote = h('div', { class: 'draft-note', style: 'display:none' });
+
+    function snapshot() {
+      return {
+        фио: fioInput.value, роль: roleSelect.value, телефон: phoneInput.value,
+        ставка: rateInput.value, тип_ставки: rateTypeSelect.value,
+        комментарий: commentInput.value,
+      };
+    }
+    function restore(d) {
+      fioInput.value = d.фио || '';
+      roleSelect.value = d.роль || '';
+      phoneInput.value = d.телефон || '';
+      rateInput.value = d.ставка || '';
+      rateTypeSelect.value = d.тип_ставки || '';
+      commentInput.value = d.комментарий || '';
+    }
+    function validate() {
+      [fFio, fRole].forEach(clearError);
+      let ok = true;
+      if (!fioInput.value.trim()) {
+        showError(fFio, 'ФИО обязательно'); ok = false;
+      }
+      if (!roleSelect.value) {
+        showError(fRole, 'Выберите роль'); ok = false;
+      }
+      return ok;
+    }
+    function collect() {
+      const fio = fioInput.value.trim();
+      return {
+        sheet: 'спр_сотрудники',
+        keyColumns: ['фио', 'роль'],
+        row: {
+          'фио': fio,
+          'роль': roleSelect.value,
+          'телефон': phoneInput.value.trim(),
+          'действует_с': today(),
+          'действует_по': '',
+          'ставка_базовая_₽': rateInput.value ? num(rateInput.value) : '',
+          'ставка_тип': rateTypeSelect.value,
+          'тип': '',
+          'статус': 'активный',
+          'комментарий': commentInput.value.trim(),
+        },
+        idPrefix: 'EMP',
+        idField: 'id_сотрудника',
+        versionedField: 'id_версии',
+        versionSuffix: '-V1',
+        logType: 'сотрудник',
+        shortDesc: 'Новый сотрудник: ' + fio + ' (' + roleSelect.value + ')',
+        managerId: employee['id_сотрудника'],
+      };
+    }
+
+    const built = composeForm({
+      formType, opts, draftNote, queueKey: 'новый_сотрудник',
+      validate, collect,
+      fieldNodes: [fFio, fRole, fPhone, fRate, fRateType, fComment],
+    });
+    setupDraft(formType, built.form, snapshot, restore, draftNote);
+
+    return Screens.formScreen({
+      employee, title: '+ Сотрудник',
+      subtitle: 'Новая запись в спр_сотрудники. После сохранения ' +
+        'сотрудник появится в выпадашках операций и в списке «Кто вы?».',
+      breadcrumb: 'Справочники',
+      content: built.form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
+  // ===================== «+ Горничная» (Инкр.8 доп.) ===================
+  // Отдельный справочник `спр_горничные` (FINANCE_SPEC §4.6) — не
+  // часть спр_сотрудники. Версионируется, формат id_версии =
+  // `CLN-NNN-v1` (lowercase v — расходится с OBJ-NNN-V1 и EMP-NNN-V1
+  // у объектов/сотрудников; формат поддерживается через
+  // `versionSuffix: '-v1'`).
+  //
+  // Обязательно: ФИО + тип (основная/подработка). Системные:
+  // id_горничной=CLN-NNN, id_версии=CLN-NNN-v1, действует_с=сегодня,
+  // статус=активная. Опц.: телефон, комментарий. Реквизиты — отдельный
+  // лист `спр_реквизиты_горничных`, в этой форме не записываются.
+  function openНоваяГорничная(opts) {
+    const employee = opts.employee;
+    const formType = 'новая_горничная';
+
+    const fioInput = textInput('Иванова Анна');
+    const typeSelect = selectInput();
+    fillSelect(typeSelect, [
+      { value: 'основная', text: 'основная' },
+      { value: 'подработка', text: 'подработка' },
+    ]);
+    const phoneInput = textInput('+7 999 123 45 67');
+    const commentInput = textarea('Заметки (необязательно)');
+
+    const fFio = field('ФИО', fioInput);
+    const fType = field('Тип', typeSelect);
+    const fPhone = field('Телефон', phoneInput, { aside: 'необязательно' });
+    const fComment = field('Комментарий', commentInput, { aside: 'необязательно' });
+
+    const draftNote = h('div', { class: 'draft-note', style: 'display:none' });
+
+    function snapshot() {
+      return {
+        фио: fioInput.value, тип: typeSelect.value,
+        телефон: phoneInput.value, комментарий: commentInput.value,
+      };
+    }
+    function restore(d) {
+      fioInput.value = d.фио || '';
+      typeSelect.value = d.тип || '';
+      phoneInput.value = d.телефон || '';
+      commentInput.value = d.комментарий || '';
+    }
+    function validate() {
+      [fFio, fType].forEach(clearError);
+      let ok = true;
+      if (!fioInput.value.trim()) {
+        showError(fFio, 'ФИО обязательно'); ok = false;
+      }
+      if (!typeSelect.value) {
+        showError(fType, 'Выберите тип'); ok = false;
+      }
+      return ok;
+    }
+    function collect() {
+      const fio = fioInput.value.trim();
+      return {
+        sheet: 'спр_горничные',
+        keyColumns: ['фио', 'тип'],
+        row: {
+          'фио': fio,
+          'телефон': phoneInput.value.trim(),
+          'действует_с': today(),
+          'действует_по': '',
+          'тип': typeSelect.value,
+          'статус': 'активная',
+          'комментарий': commentInput.value.trim(),
+        },
+        idPrefix: 'CLN',
+        idField: 'id_горничной',
+        versionedField: 'id_версии',
+        versionSuffix: '-v1',          // боевой формат — lowercase v
+        logType: 'горничная',
+        shortDesc: 'Новая горничная: ' + fio + ' (' + typeSelect.value + ')',
+        managerId: employee['id_сотрудника'],
+      };
+    }
+
+    const built = composeForm({
+      formType, opts, draftNote, queueKey: 'новая_горничная',
+      validate, collect,
+      fieldNodes: [fFio, fType, fPhone, fComment],
+    });
+    setupDraft(formType, built.form, snapshot, restore, draftNote);
+
+    return Screens.formScreen({
+      employee, title: '+ Горничная',
+      subtitle: 'Новая запись в спр_горничные. После сохранения горничная ' +
+        'появится в выпадашках операций (уборка, выплата, заселение).',
+      breadcrumb: 'Справочники',
+      content: built.form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
   return {
     openУборка, openМастер, openХозРасход, openПрочее, openBatch, openВыплата,
     openЗаселение, openОтчётСобственнику,
     openПоискОпераций, openКорректировка,
     openПомощь,
+    openНовыйСобственник, openНоваяКвартира, openНовыйСотрудник, openНоваяГорничная,
+    nextRefId,        // экспорт для sender'ов в app.js
   };
 })();
