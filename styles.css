@@ -809,6 +809,11 @@ body {
 .dist-owner .owner-req-row .owner-req {
   display: block;
   margin-bottom: 6px;
+  /* Длинный реквизит обрезаем многоточием в одну строку — полный текст
+     даёт кнопка «копировать» и подсказка title при наведении. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .copy-btn {
   flex: none;

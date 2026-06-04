@@ -1396,8 +1396,7 @@ window.Forms = (() => {
     const fOwner = field('Доход собственника ₽',
       h('div', { class: 'field-stack' }, ownerInput, ownerHint));
     const fRento = field('Доход Ренто ₽', rentoBox, { aside: 'авто' });
-    const fPlatform = field('Площадка должна Ренто ₽', platformInput,
-      { aside: 'для авито / яндекс' });
+    const fPlatform = field('Площадка должна Ренто ₽', platformInput);
     const fComment = field('Комментарий', commentInput, { aside: 'необязательно' });
 
     // ------------------------- расчёты (§7.1, §7.3) ----------------------
@@ -1632,7 +1631,7 @@ window.Forms = (() => {
           h('div', { class: 'dist-owner' },
             h('div', { class: 'owner-name' }, owner['фио']),
             h('div', { class: 'owner-req-row' },
-              h('div', { class: 'owner-req' }, reqText),
+              h('div', { class: 'owner-req', title: reqText }, reqText),
               copyBtn)));
       }
       // Внешние перерисовки (смена квартиры): только для строк-собственника.
