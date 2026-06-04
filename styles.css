@@ -125,6 +125,8 @@ body {
   transition: border-color 0.12s, box-shadow 0.12s, background 0.12s;
 }
 .field-input::placeholder { color: var(--text-3); }
+/* Узкое поле для второстепенных числовых вводов (доп.оплата заселения). */
+.field-input.input-sm { max-width: 220px; }
 .field-input:focus {
   background: var(--surface-0);
   border-color: var(--lime-500);
@@ -796,12 +798,17 @@ body {
   color: var(--warning); font-style: italic; overflow-wrap: normal;
 }
 .dist-owner .owner-req-row {
-  display: flex; align-items: center; gap: 8px; justify-content: space-between;
+  /* Раньше был горизонтальный flex (текст | кнопка) — он зажимал длинный
+     номер карты в узкую колонку, и вёрстка «ехала». Теперь вертикальный
+     стек: текст занимает ВСЮ ширину карточки и переносится по словам,
+     кнопка «копировать» — отдельной строкой под ним. */
+  display: block;
   width: 100%;
 }
-/* Текст реквизита заполняет строку и корректно сжимается рядом с кнопкой
-   (min-width:0 снимает flex-ловушку min-content, дававшую 1 символ в ширину). */
-.dist-owner .owner-req-row .owner-req { flex: 1; min-width: 0; }
+.dist-owner .owner-req-row .owner-req {
+  display: block;
+  margin-bottom: 6px;
+}
 .copy-btn {
   flex: none;
   padding: 4px 10px;

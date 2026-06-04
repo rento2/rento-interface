@@ -1370,6 +1370,7 @@ window.Forms = (() => {
     // 04.06): входит в чистую выручку, доход собственника считается без
     // неё, вся доп.оплата уходит в доход Ренто.
     const extraInput = numberInput();
+    extraInput.classList.add('input-sm');   // поле уже — доп.оплата второстепенна
     const extraHint = h('div', { class: 'field-hint' });
 
     // --- РАСПРЕДЕЛЕНИЕ ---
@@ -1693,7 +1694,8 @@ window.Forms = (() => {
       fChannel);
     const financeSection = section('ФИНАНСЫ',
       h('div', { class: 'field-row-2' }, fSum, fCommission),
-      h('div', { class: 'field-row-2' }, fExtra, fNet),
+      fNet,                               // чистая выручка — первой, своя строка
+      fExtra,                             // доп.оплата — отдельно, поле уже (input-sm)
       h('div', { class: 'field-row-2' }, fOwner, fRento),
       fPlatform);
     const distSection = section('РАСПРЕДЕЛЕНИЕ',
