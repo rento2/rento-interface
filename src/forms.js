@@ -1370,7 +1370,6 @@ window.Forms = (() => {
     // 04.06): входит в чистую выручку, доход собственника считается без
     // неё, вся доп.оплата уходит в доход Ренто.
     const extraInput = numberInput();
-    extraInput.classList.add('input-sm');   // поле уже — доп.оплата второстепенна
     const extraHint = h('div', { class: 'field-hint' });
 
     // --- РАСПРЕДЕЛЕНИЕ ---
@@ -1692,11 +1691,13 @@ window.Forms = (() => {
       fObject,
       h('div', { class: 'field-row-2' }, fIn, fOut),
       fChannel);
+    // Все поля ФИНАНСОВ — в один столбец, одинаковой ширины (фидбек
+    // фаундера 04.06): без парных рядов и узких полей.
     const financeSection = section('ФИНАНСЫ',
-      h('div', { class: 'field-row-2' }, fSum, fCommission),
-      fNet,                               // чистая выручка — первой, своя строка
-      fExtra,                             // доп.оплата — отдельно, поле уже (input-sm)
-      h('div', { class: 'field-row-2' }, fOwner, fRento),
+      fSum, fCommission,
+      fNet,
+      fExtra,
+      fOwner, fRento,
       fPlatform);
     const distSection = section('РАСПРЕДЕЛЕНИЕ',
       // Подпись «Где деньги физически — сумма строк = чистой выручке»

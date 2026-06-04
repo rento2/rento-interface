@@ -125,8 +125,6 @@ body {
   transition: border-color 0.12s, box-shadow 0.12s, background 0.12s;
 }
 .field-input::placeholder { color: var(--text-3); }
-/* Узкое поле для второстепенных числовых вводов (доп.оплата заселения). */
-.field-input.input-sm { max-width: 220px; }
 .field-input:focus {
   background: var(--surface-0);
   border-color: var(--lime-500);
