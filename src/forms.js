@@ -1338,7 +1338,13 @@ window.Forms = (() => {
 
   function openЗаселение(opts) {
     const employee = opts.employee;
-    const formType = 'заселение';
+    // Режим правки заселения (opts.editOf = строка журнал_поступления из
+    // поиска). Append-only: «правка» = замещение — старое заселение
+    // каскадно откатывается, отредактированное уходит новым (sender
+    // 'правка_заселения'). Форма предзаполняется родителем + связанными
+    // строками. Черновик в этом режиме не ведём.
+    const editOf = opts.editOf || null;
+    const formType = editOf ? 'правка_заселения' : 'заселение';
 
     const objects = Cache.forDropdown('спр_объекты');
     const objectsByVersion = {};
@@ -1667,13 +1673,13 @@ window.Forms = (() => {
       rowsBox.append(row.node);
       if (data) row.restore(data);
       syncCounter();
-      if (formInited) saveDraft(formType, snapshot());
+      if (formInited && !editOf) saveDraft(formType, snapshot());
     }
     function removeRow(row) {
       rows = rows.filter((r) => r !== row);
       row.node.remove();
       syncCounter();
-      if (formInited) saveDraft(formType, snapshot());
+      if (formInited && !editOf) saveDraft(formType, snapshot());
     }
 
     const addBtn = h('button', { class: 'dist-add', type: 'button' },
@@ -1908,23 +1914,120 @@ window.Forms = (() => {
       };
     }
 
+    // -------- режим правки: предзаполнение + замещающий collect ----------
+    // Обратный маппинг связанных строк → типы строк распределения.
+    const PAYTYPE_TO_DIST = {
+      'собственник': 'собственник', 'горничная': 'горничная',
+      'мастер': 'мастер', 'сотрудник': 'сотрудник', 'прочее': 'прочее',
+    };
+    const KASSA_TO_DIST = {
+      'р/с': 'ренто_рс', 'безнал': 'ренто_безнал', 'карта физлица': 'ренто_карта',
+    };
+
+    // Заполнить поля шапки из строки журнал_поступления.
+    function fillEditParent(d) {
+      objectSelect.value = d['id_объекта_версии'] || '';
+      inEl.value = d['дата_с'] || today();
+      outEl.value = d['дата_по'] || tomorrow();
+      channelSelect.value = d['канал_брони'] || '';
+      sumInput.value = d['сумма_бронирования_₽'] || '';
+      commissionInput.value = d['комиссия_площадки_₽'] || '';
+      platformInput.value = d['площадка_должна_₽'] || '';
+      extraInput.value = d['доп_оплата_₽'] || '';
+      commentInput.value = d['комментарий'] || '';
+      ownerInput.value = '';
+      recompute();                          // дефолт дохода собственника
+      // Доход собственника из исходной важнее дефолта (как в restore).
+      const ds = d['доход_собственника_₽'];
+      if (ds !== '' && ds != null) ownerInput.value = ds;
+      recompute();
+    }
+
+    // Подгрузить активные связанные строки и пересобрать распределение.
+    async function loadEditChildren(parentId) {
+      rows.forEach((r) => r.node.remove());
+      rows = [];
+      let byJ;
+      try {
+        byJ = await Journal.readMany([
+          CONFIG.JOURNAL_ВЫПЛАТЫ, CONFIG.JOURNAL_ХОЗ_РАСХОДЫ, CONFIG.JOURNAL_КАССА]);
+      } catch (err) {
+        console.error('Правка заселения — загрузка связанных строк:', err);
+        addRow();                           // фолбэк: одна пустая строка
+        recompute();
+        return;
+      }
+      const active = (j) => ((byJ[j] && byJ[j].records) || []).filter((rec) =>
+        rec.data['id_связанной_операции'] === parentId &&
+        String(rec.data['статус']).trim() !== 'отменена');
+      const dist = [];
+      active(CONFIG.JOURNAL_ВЫПЛАТЫ).forEach((rec) => {
+        const t = PAYTYPE_TO_DIST[String(rec.data['тип_получателя']).trim()];
+        if (t) dist.push({ тип: t, получатель: rec.data['id_получателя'] || '',
+          сумма: rec.data['сумма_₽'] });
+      });
+      active(CONFIG.JOURNAL_ХОЗ_РАСХОДЫ).forEach((rec) => {
+        dist.push({ тип: 'хоз_расход', получатель: rec.data['id_категории'] || '',
+          сумма: rec.data['сумма_₽'] });
+      });
+      active(CONFIG.JOURNAL_КАССА).forEach((rec) => {
+        const t = KASSA_TO_DIST[String(rec.data['тип_кассы']).trim()];
+        if (t) dist.push({ тип: t, получатель: '', сумма: rec.data['сумма_₽'] });
+      });
+      if (!dist.length) addRow(); else dist.forEach((rd) => addRow(rd));
+      recompute();
+    }
+
+    // Замещающий collect: тот же payload заселения + id старого для отката.
+    function collectEdit() {
+      const base = collect();
+      return {
+        oldId: editOf.data['id_операции'],
+        parent: base.parent,
+        lines: base.lines,
+        '_shortDesc': 'Правка заселения ' + editOf.data['id_операции'] +
+          ' → ' + base['_shortDesc'],
+        '_managerId': base['_managerId'],
+      };
+    }
+
     // Стартовая строка распределения — одна пустая (§7.4: минимум 1).
     addRow();
     recompute();
 
+    const editBanner = editOf ? h('div', { class: 'draft-note' },
+      'Правка заменит заселение ' + editOf.data['id_операции'] +
+      ': старое будет отменено, сохранится новая версия. ' +
+      'Это изменит цифры периода.') : null;
+
     const built = composeForm({
-      formType, opts, draftNote, queueKey: 'заселение', validate, collect,
+      formType, opts, draftNote,
+      topNote: editBanner,
+      queueKey: editOf ? 'правка_заселения' : 'заселение',
+      validate,
+      collect: editOf ? collectEdit : collect,
       fieldNodes: [bookingSection, financeSection, distSection, fComment],
     });
-    setupDraft(formType, built.form, snapshot, restore, draftNote);
-    // С этого момента дальнейшие add/removeRow — реальные
-    // пользовательские действия, их можно сохранять в черновик.
-    formInited = true;
+    if (editOf) {
+      // Режим правки: шапку заполняем сразу, строки — после загрузки
+      // связанных. Черновик не подключаем (правка — разовое замещение).
+      fillEditParent(editOf.data);
+      loadEditChildren(editOf.data['id_операции']);
+      formInited = true;
+    } else {
+      setupDraft(formType, built.form, snapshot, restore, draftNote);
+      // С этого момента дальнейшие add/removeRow — реальные
+      // пользовательские действия, их можно сохранять в черновик.
+      formInited = true;
+    }
 
     return Screens.formScreen({
-      employee, title: '+ Заселение',
-      subtitle: 'Гость заехал — опишите, как были распределены деньги. ' +
-        'Система подскажет по расчёту сумм.',
+      employee,
+      title: editOf ? 'Изменить заселение' : '+ Заселение',
+      subtitle: editOf
+        ? 'Поменяйте что нужно и сохраните — старое заселение заменится новым.'
+        : 'Гость заехал — опишите, как были распределены деньги. ' +
+          'Система подскажет по расчёту сумм.',
       content: built.form,
       onBack: () => opts.onExit(),
       onRefresh: opts.onRefresh, onLogout: opts.onLogout,
@@ -2498,9 +2601,11 @@ window.Forms = (() => {
 
   function isCorrectable(op, data) {
     if (!op) return false;
-    // Заселение и кассовые строки — вне скоупа 6.1 (см. комментарий
-    // CORRECTABLE_JOURNALS).
-    if (op.key === 'заселение' || op.key === 'касса_заселения') return false;
+    // Кассовые строки заселения — служебные, отдельно не правятся.
+    // Заселение теперь доступно в поиске: правится замещением (откат +
+    // новое) через форму заселения, не дельта-корректировкой —
+    // действие разводится в рендере результатов (isЗаселение).
+    if (op.key === 'касса_заселения') return false;
     // Уже отменённую корректировать бессмысленно — она и так не идёт в
     // витрины. Откат отменённой — невозможен (по «Моим внесениям»).
     if (String(data['статус']).trim() === 'отменена') return false;
@@ -2532,10 +2637,10 @@ window.Forms = (() => {
     const resultsBox = h('div', { class: 'op-search-results' });
     const hintBox = h('p', { class: 'muted' },
       'Введите ID операции (или его фрагмент) и/или диапазон дат внесения, ' +
-      'затем нажмите «Найти». Поиск идёт по операциям, которые можно ' +
-      'корректировать: уборка, мастер, хоз-расход, прочее, выплата, ' +
-      'batch площадки. Заселения и связанные с ними строки в этом разделе ' +
-      'не показываются — для них правка идёт через откат.');
+      'затем нажмите «Найти». Поиск идёт по операциям: уборка, мастер, ' +
+      'хоз-расход, прочее, выплата, batch площадки — для них корректировка; ' +
+      'и заселения — для них правка через форму (старое заменяется новым). ' +
+      'Служебные кассовые строки заселения отдельно не показываются.');
     resultsBox.append(hintBox);
 
     function setStatus(text, cls) {
@@ -2616,17 +2721,22 @@ window.Forms = (() => {
 
       rows.forEach((entry) => {
         const { op, data } = entry;
-        const correctBtn = h('button',
-          { class: 'link-btn', type: 'button' }, 'Создать корректировку');
-        correctBtn.addEventListener('click', () => {
-          opts.onOpenКорректировка(entry);
+        // Заселение многожурнальное — правится замещением (откат+новое)
+        // через форму заселения, а не дельта-корректировкой.
+        const isЗаселение = op.key === 'заселение';
+        const actionBtn = h('button',
+          { class: 'link-btn', type: 'button' },
+          isЗаселение ? 'Изменить заселение' : 'Создать корректировку');
+        actionBtn.addEventListener('click', () => {
+          if (isЗаселение) opts.onOpenПравкаЗаселения(entry);
+          else opts.onOpenКорректировка(entry);
         });
         table.append(h('div', { class: 'today-row' },
           h('div', { class: 'tc tc-id' }, data['id_операции']),
           h('div', { class: 'tc tc-type' }, op.label),
           h('div', { class: 'tc tc-desc' }, op.describe(data)),
           h('div', { class: 'tc tc-sum' }, money(Operations.sumOf(op, data))),
-          h('div', { class: 'tc tc-status' }, correctBtn)));
+          h('div', { class: 'tc tc-status' }, actionBtn)));
       });
 
       resultsBox.append(table);

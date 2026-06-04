@@ -266,6 +266,20 @@
         indicatorSlot = corr.indicatorSlot;
         refreshIndicator();
       };
+      // Заселение правится через свою форму в режиме замещения (editOf):
+      // старое откатывается, новое сохраняется. entry = { journal, op, data }.
+      callbacks.onOpenПравкаЗаселения = (entry) => {
+        todayCtl = null;
+        const scr = Forms.openЗаселение({
+          employee, editOf: entry,
+          onRefresh: handleRefresh,
+          onLogout: () => { endUserSession(); showLogin(); },
+          onExit: showMain,
+          onOpenHelp: () => showФорма('помощь'),
+        });
+        indicatorSlot = scr.indicatorSlot;
+        refreshIndicator();
+      };
     }
     const slots = opener(callbacks);
     indicatorSlot = slots.indicatorSlot;
@@ -344,6 +358,37 @@
     return { idOperation };
   }
 
+  // Каскадная отмена заселения: родитель в журнал_поступления + связанные
+  // строки (выплаты/хоз_расходы/касса) по id_связанной_операции.
+  // Идемпотентно — уже отменённые пропускаются. Возвращает число
+  // отменённых связанных строк. Общая механика для отката заселения и
+  // для правки (правка = новое заселение + отмена старого).
+  async function cancelЗаселениеCascade(parentId, managerId) {
+    const patch = {
+      'статус': 'отменена',
+      'отменена_кем': managerId,
+      'отменена_когда': new Date().toISOString(),
+    };
+    await Journal.updateOperation(CONFIG.JOURNAL_ПОСТУПЛЕНИЯ, parentId, patch);
+    let cascaded = 0;
+    const childJournals = [
+      CONFIG.JOURNAL_ВЫПЛАТЫ,
+      CONFIG.JOURNAL_ХОЗ_РАСХОДЫ,
+      CONFIG.JOURNAL_КАССА,
+    ];
+    const both = await Journal.readMany(childJournals);
+    for (const j of childJournals) {
+      const recs = (both[j] && both[j].records) || [];
+      for (const rec of recs) {
+        if (rec.data['id_связанной_операции'] !== parentId) continue;
+        if (String(rec.data['статус']).trim() === 'отменена') continue;
+        await Journal.updateOperation(j, rec.data['id_операции'], patch);
+        cascaded += 1;
+      }
+    }
+    return cascaded;
+  }
+
   function registerSenders() {
     // Один отправитель на все формы — ветвлений по типу нет (ADR-006
     // pipeline). Ключ очереди = formType из формы, нужен только для
@@ -374,30 +419,8 @@
     // пропускаются.
     Queue.registerSender('откат_заселения', async (formData) => {
       const parentId = formData['id_операции'];
-      const patch = {
-        'статус': 'отменена',
-        'отменена_кем': formData['id_менеджера'],
-        'отменена_когда': new Date().toISOString(),
-      };
-      await Journal.updateOperation(
-        CONFIG.JOURNAL_ПОСТУПЛЕНИЯ, parentId, patch);
-
-      let cascaded = 0;
-      const childJournals = [
-        CONFIG.JOURNAL_ВЫПЛАТЫ,
-        CONFIG.JOURNAL_ХОЗ_РАСХОДЫ,
-        CONFIG.JOURNAL_КАССА,
-      ];
-      const both = await Journal.readMany(childJournals);
-      for (const j of childJournals) {
-        const recs = (both[j] && both[j].records) || [];
-        for (const rec of recs) {
-          if (rec.data['id_связанной_операции'] !== parentId) continue;
-          if (String(rec.data['статус']).trim() === 'отменена') continue;
-          await Journal.updateOperation(j, rec.data['id_операции'], patch);
-          cascaded += 1;
-        }
-      }
+      const cascaded = await cancelЗаселениеCascade(
+        parentId, formData['id_менеджера']);
       await Journal.logAction({
         'timestamp': new Date().toISOString(),
         'id_менеджера': formData['id_менеджера'],
@@ -407,6 +430,29 @@
         'краткое_описание': 'Откат заселения, связанных записей: ' + cascaded,
       });
       return {};
+    });
+
+    // Правка заселения (замещение): создаём новое заселение, затем
+    // откатываем старое. Порядок важен — СНАЧАЛА новое (идемпотентно по
+    // client_uuid), ПОТОМ отмена старого: при обрыве между шагами
+    // заселение не «исчезает» (старое ещё активно), ретрай добьёт отмену.
+    // Кратковременно оба активны — на ретрае сходится к (новое активно,
+    // старое отменено). logAction дедуп по (новый id, 'правка').
+    Queue.registerSender('правка_заселения', async (formData, clientUuid) => {
+      const { idOperation } = await Journal.appendIncasementTx(
+        formData['parent'], formData['lines'], clientUuid);
+      const cascaded = await cancelЗаселениеCascade(
+        formData['oldId'], formData['_managerId']);
+      await Journal.logAction({
+        'timestamp': new Date().toISOString(),
+        'id_менеджера': formData['_managerId'],
+        'действие': 'правка',
+        'id_операции': idOperation,
+        'тип_операции': 'заселение',
+        'краткое_описание': formData['_shortDesc'] +
+          ' (отменено ' + formData['oldId'] + ', связанных: ' + cascaded + ')',
+      });
+      return { idOperation };
     });
 
     // Корректировка задним числом (§16, TICKET-6.1). Пишет новую строку
