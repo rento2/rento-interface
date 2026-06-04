@@ -3728,9 +3728,118 @@ window.Forms = (() => {
     });
   }
 
+  // ============ «Отчёт по сотрудникам» (#4, витрина Морган) =============
+  // Read-only экран над витриной `отчёт_сотрудники_период`: два поля
+  // периода пишутся в C3/C4 листа (как даты), витрина пересчитывает
+  // формулы, затем читаем строки A6:G — начислено/выплачено/долг по
+  // операционному персоналу. `долг_на_старте` (колонка D) — ручной ввод
+  // фаундера в листе, экран его только показывает. Доступ обоим
+  // (блок «Отчётность»). Замечание: C3/C4 — общие ячейки витрины; при
+  // одновременной генерации двумя пользователями период перезапишется
+  // (для УК из 2 человек риск низкий).
+  function openОтчётСотрудники(opts) {
+    const employee = opts.employee;
+    const SHEET = 'отчёт_сотрудники_период';
+
+    const fromEl = h('input', { class: 'field-input', type: 'date' });
+    const toEl = h('input', { class: 'field-input', type: 'date' });
+    const genBtn = h('button',
+      { class: 'btn-primary btn-auto', type: 'submit' }, 'Сформировать');
+
+    const fFrom = field('Период с', fromEl);
+    const fTo = field('Период по', toEl);
+    const fieldsRow = h('div', { class: 'field-row-2' }, fFrom, fTo);
+    const resultsBox = h('div', { class: 'op-search-results' });
+    resultsBox.append(h('p', { class: 'muted' },
+      'Выберите период и нажмите «Сформировать» — покажем начислено, ' +
+      'выплачено и долг по каждому сотруднику за период.'));
+
+    function setStatus(text, cls) {
+      UI.clear(resultsBox);
+      resultsBox.append(h('p', { class: cls || 'muted' }, text));
+    }
+
+    async function generate() {
+      if (!fromEl.value || !toEl.value) {
+        setStatus('Укажите обе даты периода.', 'error-banner'); return;
+      }
+      if (fromEl.value > toEl.value) {
+        setStatus('Дата «с» позже даты «по» — поправьте.', 'error-banner'); return;
+      }
+      setStatus('Считаем…');
+      try {
+        // Период → C3/C4 (как даты, USER_ENTERED), затем читаем строки.
+        // Запись завершается до чтения (await), витрина пересчитывает
+        // формулы — getValues вернёт свежие значения.
+        await Sheets.updateRange("'" + SHEET + "'!C3", [fromEl.value]);
+        await Sheets.updateRange("'" + SHEET + "'!C4", [toEl.value]);
+        const values = await Sheets.getValues("'" + SHEET + "'!A6:G60");
+        renderTable(values);
+      } catch (err) {
+        console.error('Отчёт по сотрудникам:', err);
+        setStatus('Не удалось сформировать отчёт: ' +
+          ((err && err.message) || 'ошибка сети') + '.', 'error-banner');
+      }
+    }
+
+    function renderTable(values) {
+      UI.clear(resultsBox);
+      // row6 — заголовки витрины; данные с row7. Берём строки с непустым id.
+      const rows = (values || []).slice(1).filter((r) => r && r[0]);
+      if (!rows.length) {
+        resultsBox.append(h('p', { class: 'muted' },
+          'В витрине нет строк сотрудников.'));
+        return;
+      }
+      resultsBox.append(h('p', { class: 'muted' },
+        'Период: ' + fromEl.value + ' — ' + toEl.value + '.'));
+      const table = h('div', { class: 'today-table' });
+      table.append(h('div', { class: 'today-row today-thead' },
+        h('div', { class: 'tc tc-desc' }, 'СОТРУДНИК'),
+        h('div', { class: 'tc tc-type' }, 'РОЛЬ'),
+        h('div', { class: 'tc tc-sum' }, 'ДОЛГ СТАРТ'),
+        h('div', { class: 'tc tc-sum' }, 'НАЧИСЛЕНО'),
+        h('div', { class: 'tc tc-sum' }, 'ВЫПЛАЧЕНО'),
+        h('div', { class: 'tc tc-sum' }, 'ДОЛГ')));
+      // A id | B ФИО | C роль | D долг_старт | E начислено | F выплачено | G долг
+      rows.forEach((r) => {
+        table.append(h('div', { class: 'today-row' },
+          h('div', { class: 'tc tc-desc' }, r[1] || r[0]),
+          h('div', { class: 'tc tc-type' }, r[2] || ''),
+          h('div', { class: 'tc tc-sum' }, money(num(r[3]))),
+          h('div', { class: 'tc tc-sum' }, money(num(r[4]))),
+          h('div', { class: 'tc tc-sum' }, money(num(r[5]))),
+          h('div', { class: 'tc tc-sum' }, money(num(r[6])))));
+      });
+      resultsBox.append(table);
+    }
+
+    const form = h('form', { class: 'op-form op-search-form' },
+      fieldsRow,
+      h('div', { class: 'op-footer' },
+        h('span', { class: 'op-footer-hint' },
+          'Долг на старте задаётся вручную в витрине (фаундер). ' +
+          'У окладных «начислено» = 0 (оклад в журналах не начисляется).'),
+        h('div', { class: 'op-footer-actions' }, genBtn)),
+      h('div', { class: 'op-divider' }),
+      resultsBox);
+    form.addEventListener('submit', (e) => { e.preventDefault(); generate(); });
+
+    return Screens.formScreen({
+      employee, title: 'Отчёт по сотрудникам',
+      subtitle: 'Начислено, выплачено и долг по горничным, мастерам и ' +
+        'менеджерам за период.',
+      breadcrumb: 'Отчётность',
+      content: form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
   return {
     openУборка, openМастер, openХозРасход, openПрочее, openBatch, openВыплата,
-    openЗаселение, openОтчётСобственнику,
+    openЗаселение, openОтчётСобственнику, openОтчётСотрудники,
     openПоискОпераций, openКорректировка,
     openПомощь,
     openНовыйСобственник, openНоваяКвартира, openНовыйСотрудник, openНоваяГорничная,
