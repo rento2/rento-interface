@@ -1366,6 +1366,11 @@ window.Forms = (() => {
     const ownerHint = h('div', { class: 'field-hint' });
     const rentoBox = readoutBox();
     const platformInput = numberInput();
+    // Доп.оплата (продление / ранний-поздний выезд) — Опция A (DEVLOG
+    // 04.06): входит в чистую выручку, доход собственника считается без
+    // неё, вся доп.оплата уходит в доход Ренто.
+    const extraInput = numberInput();
+    const extraHint = h('div', { class: 'field-hint' });
 
     // --- РАСПРЕДЕЛЕНИЕ ---
     const rowsBox = h('div', { class: 'dist-rows' });
@@ -1385,6 +1390,9 @@ window.Forms = (() => {
     const fSum = field('Сумма брони ₽', sumInput);
     const fCommission = field('Комиссия площадки ₽',
       h('div', { class: 'field-stack' }, commissionInput, commissionHint));
+    const fExtra = field('Доп. оплата ₽',
+      h('div', { class: 'field-stack' }, extraInput, extraHint),
+      { aside: 'продление / ранний-поздний — 100% Ренто' });
     const fNet = field('Чистая выручка ₽', netBox, { aside: 'авто' });
     const fOwner = field('Доход собственника ₽',
       h('div', { class: 'field-stack' }, ownerInput, ownerHint));
@@ -1394,8 +1402,14 @@ window.Forms = (() => {
     const fComment = field('Комментарий', commentInput, { aside: 'необязательно' });
 
     // ------------------------- расчёты (§7.1, §7.3) ----------------------
-    function net() {
+    // base — выручка от брони за вычетом комиссии площадки. Доход
+    // собственника считается ТОЛЬКО от неё (Опция A). net — чистая
+    // выручка: base + доп.оплата; доп целиком оседает в доходе Ренто.
+    function base() {
       return Math.max(0, num(sumInput.value) - num(commissionInput.value));
+    }
+    function net() {
+      return base() + num(extraInput.value);
     }
     function modelOf() {
       const obj = objectsByVersion[objectSelect.value];
@@ -1408,7 +1422,8 @@ window.Forms = (() => {
       if (!m) return null;
       if (String(m['тип']).trim().toLowerCase() === 'фикс') return 0;
       const share = num(m['доля_ренто_%']);
-      return Math.round(net() * (1 - share / 100));
+      // Опция A: доля собственника — от base (без доп.оплаты).
+      return Math.round(base() * (1 - share / 100));
     }
     let lastOwnerDefault = null;
 
@@ -1449,9 +1464,19 @@ window.Forms = (() => {
         }
         lastOwnerDefault = def;
       }
-      // Доход Ренто = чистая − доход собственника (§7.2).
+      // Доход Ренто = чистая − доход собственника (§7.2). Доп.оплата
+      // входит в чистую (n) и потому целиком попадает в доход Ренто.
       const rento = n - num(ownerInput.value);
       rentoBox._value.textContent = money(rento);
+
+      // Подсказка по доп.оплате (Опция A) — куда она уходит.
+      if (num(extraInput.value) > 0) {
+        extraHint.textContent = 'вся сумма идёт в доход Ренто';
+        extraHint.className = 'field-hint';
+      } else {
+        extraHint.textContent = '';
+        extraHint.className = 'field-hint';
+      }
 
       // Подсказка по доходу собственника (§7.3).
       const m = modelOf();
@@ -1479,7 +1504,7 @@ window.Forms = (() => {
       syncCounter();
     }
 
-    [sumInput, commissionInput, ownerInput].forEach((el) => {
+    [sumInput, commissionInput, ownerInput, extraInput].forEach((el) => {
       el.addEventListener('input', recompute);
     });
     objectSelect.addEventListener('change', () => {
@@ -1668,7 +1693,7 @@ window.Forms = (() => {
       fChannel);
     const financeSection = section('ФИНАНСЫ',
       h('div', { class: 'field-row-2' }, fSum, fCommission),
-      fNet,
+      h('div', { class: 'field-row-2' }, fExtra, fNet),
       h('div', { class: 'field-row-2' }, fOwner, fRento),
       fPlatform);
     const distSection = section('РАСПРЕДЕЛЕНИЕ',
@@ -1686,7 +1711,7 @@ window.Forms = (() => {
         объект: objectSelect.value, заезд: inEl.value, выезд: outEl.value,
         канал: channelSelect.value, сумма: sumInput.value,
         комиссия: commissionInput.value, доходС: ownerInput.value,
-        площадка: platformInput.value,
+        площадка: platformInput.value, доп: extraInput.value,
         комментарий: commentInput.value,
         строки: rows.map((r) => r.serialize()),
       };
@@ -1699,6 +1724,7 @@ window.Forms = (() => {
       sumInput.value = d.сумма || '';
       commissionInput.value = d.комиссия || '';
       platformInput.value = d.площадка || '';
+      extraInput.value = d.доп || '';
       commentInput.value = d.комментарий || '';
       // строки распределения
       rows.forEach((r) => r.node.remove());
@@ -1720,7 +1746,7 @@ window.Forms = (() => {
 
     // ---------------------------- валидации (§7.5) -----------------------
     function validate() {
-      [fObject, fIn, fOut, fChannel, fSum, fNet, fOwner].forEach(clearError);
+      [fObject, fIn, fOut, fChannel, fSum, fExtra, fNet, fOwner].forEach(clearError);
       rows.forEach((r) => r.node.classList.remove('dist-row-error'));
       let ok = true;
       const fail = (fw, msg) => { showError(fw, msg); ok = false; };
@@ -1734,16 +1760,20 @@ window.Forms = (() => {
       }
       if (!(num(sumInput.value) > 0)) fail(fSum, 'Сумма брони должна быть больше 0');
 
+      // Доп.оплата не может быть отрицательной (Опция A).
+      if (num(extraInput.value) < 0) fail(fExtra, 'Доп.оплата не может быть меньше 0');
+
       const n = net();
       if (!(n > 0)) fail(fNet, 'Чистая выручка должна быть больше 0');
 
       // Канал «прямая» с ненулевой комиссией не блокирует — это лишь
       // предупреждение (§7.5), оно показано в подсказке под комиссией.
 
-      // Доход собственника в [0; чистая выручка] (§5.4).
+      // Доход собственника в [0; base] (§5.4 + Опция A: доп.оплата
+      // собственнику не достаётся, потолок — выручка без доп).
       const owner = num(ownerInput.value);
-      if (owner < 0 || owner > n) {
-        fail(fOwner, 'Доход собственника — от 0 до чистой выручки');
+      if (owner < 0 || owner > base()) {
+        fail(fOwner, 'Доход собственника — от 0 до (сумма − комиссия)');
       }
 
       // Распределение.
@@ -1790,6 +1820,9 @@ window.Forms = (() => {
         'сумма_бронирования_₽': num(sumInput.value),
         'комиссия_площадки_₽': num(commissionInput.value),
         'площадка_должна_₽': num(platformInput.value),
+        // Опция A (DEVLOG 04.06): доп.оплата — отдельная колонка; чистая
+        // выручка = (сумма−комиссия)+доп, доп целиком в доходе Ренто.
+        'доп_оплата_₽': num(extraInput.value),
         'чистая_выручка_₽': n,
         'доход_собственника_₽': num(ownerInput.value),
         'доход_ренто_₽': n - num(ownerInput.value),
@@ -2652,6 +2685,21 @@ window.Forms = (() => {
     const rootId = existingRoot || originalId;
     const isChainedCorrection = !!existingRoot;
 
+    // #3 (DEVLOG 04.06) — реклассификация. Для журналов с категорией
+    // (хоз/прочие расходы, прочие доходы) корректировку можно сделать не
+    // суммой-дельтой, а сменой категории: пишем дельту 0 (деньги не
+    // двигаем) + новую id_категории. Витрина переносит сумму корня из
+    // старой категории в новую (зона Морган). Реклассификация
+    // распознаётся как строка с непустым id_исходной_операции и суммой 0
+    // — нормальная сумма-корректировка нулём быть не может (валидация).
+    const RECLASS_TYPE = {};
+    RECLASS_TYPE[CONFIG.JOURNAL_ХОЗ_РАСХОДЫ] = 'расход';
+    RECLASS_TYPE[CONFIG.JOURNAL_ПРОЧИЕ_РАСХОДЫ] = 'расход';
+    RECLASS_TYPE[CONFIG.JOURNAL_ПРОЧИЕ_ДОХОДЫ] = 'доход';
+    const supportsReclass = ('id_категории' in originalData) &&
+      !!RECLASS_TYPE[journal];
+    const currentCategory = String(originalData['id_категории'] || '');
+
     // §16.5: превью «итог после корректировки» считается ОТ КОРНЯ
     // цепочки, не от корректируемой строки. rootTotal = sum активных
     // записей с id_операции = rootId ИЛИ id_исходной_операции = rootId.
@@ -2757,18 +2805,61 @@ window.Forms = (() => {
     const fReason = field('Причина корректировки', reasonInput,
       { aside: 'обязательно' });
 
+    // --- режим корректировки (только для журналов с категорией) ---------
+    // «Сумма» — дельта (старое поведение). «Категория» — реклассификация
+    // (дельта 0 + новая категория). Для журналов без категории контролы
+    // не создаются, форма работает как раньше.
+    let kindSelect = null;
+    let categorySelect = null;
+    let fKind = null;
+    let fCategory = null;
+    const reclassActive = () =>
+      !!kindSelect && kindSelect.value === 'категория';
+    if (supportsReclass) {
+      kindSelect = selectInput();
+      fillSelect(kindSelect, [
+        { value: 'сумма', text: 'Исправить сумму (дельта)' },
+        { value: 'категория', text: 'Сменить категорию' },
+      ]);
+      kindSelect.value = 'сумма';
+      categorySelect = selectInput();
+      fillSelect(categorySelect, categoryOptions(journal, RECLASS_TYPE[journal]));
+      categorySelect.value = currentCategory;
+      fKind = field('Что корректируем', kindSelect);
+      fCategory = field('Новая категория', categorySelect,
+        { aside: 'сейчас: ' + Operations.categoryName(currentCategory) });
+      const syncKind = () => {
+        const reclass = reclassActive();
+        fDelta.style.display = reclass ? 'none' : '';
+        fCategory.style.display = reclass ? '' : 'none';
+      };
+      kindSelect.addEventListener('change', syncKind);
+      syncKind();
+    }
+
     function validate() {
       [fDelta, fReason].forEach(clearError);
+      if (fCategory) clearError(fCategory);
       let ok = true;
-      const raw = deltaInput.value.trim();
-      if (raw === '') {
-        showError(fDelta, 'Укажите дельту'); ok = false;
+      if (reclassActive()) {
+        // Реклассификация: дельты нет, проверяем смену категории.
+        if (!categorySelect.value) {
+          showError(fCategory, 'Выберите новую категорию'); ok = false;
+        } else if (categorySelect.value === currentCategory) {
+          showError(fCategory, 'Категория не изменилась — выберите другую');
+          ok = false;
+        }
       } else {
-        const delta = Number(raw);
-        if (isNaN(delta)) {
-          showError(fDelta, 'Дельта должна быть числом'); ok = false;
-        } else if (delta === 0) {
-          showError(fDelta, 'Дельта 0 — нечего корректировать'); ok = false;
+        const raw = deltaInput.value.trim();
+        if (raw === '') {
+          showError(fDelta, 'Укажите дельту'); ok = false;
+        } else {
+          const delta = Number(raw);
+          if (isNaN(delta)) {
+            showError(fDelta, 'Дельта должна быть числом'); ok = false;
+          } else if (delta === 0) {
+            showError(fDelta, 'Дельта 0 — нечего корректировать'); ok = false;
+          }
         }
       }
       if (!reasonInput.value.trim()) {
@@ -2778,12 +2869,12 @@ window.Forms = (() => {
     }
 
     function collect() {
-      const delta = Number(deltaInput.value);
       const reason = reasonInput.value.trim();
+      const reclass = reclassActive();
       // Стартуем от исходной и переопределяем только то, что должно
       // отличаться у корректирующей записи. Структурные поля (объект,
       // получатель, дата_операции) сохраняются — корректировка не
-      // «передумывает» операцию, а правит её цифру.
+      // «передумывает» операцию, а правит её цифру или категорию.
       const row = { ...originalData };
       // id_операции — пусто, allocates в Journal.appendOperation
       // через сквозной NNN (ADR-009).
@@ -2798,19 +2889,35 @@ window.Forms = (() => {
       } else {
         row['id_менеджера'] = employee['id_сотрудника'];
       }
-      row[sumField] = delta;                              // §16.3, Морган #8
       // §16.3 v1.7: ссылка на корень, не на непосредственного предка.
       // rootId вычислен наверху функции; для оригинала = его id, для
       // корректировки = её id_исходной_операции (тоже id корня).
       row['id_исходной_операции'] = rootId;
-      row['комментарий'] = 'КОРРЕКТИРОВКА к ' + rootId + ': ' + reason;
       row['статус'] = 'активна';
       row['отменена_кем'] = '';
       row['отменена_когда'] = '';
 
-      const sign = delta > 0 ? '+' : '−';
-      const shortDesc = 'Корректировка к ' + rootId + ' (' + op.label + '): ' +
-        sign + money(Math.abs(delta));
+      let shortDesc;
+      if (reclass) {
+        // Реклассификация: сумма-дельта 0 (деньги не двигаем), меняется
+        // категория. Витрина переносит сумму корня в новую категорию
+        // (распознаётся по сумма=0 + непустой id_исходной_операции).
+        const oldName = Operations.categoryName(currentCategory);
+        const newName = Operations.categoryName(categorySelect.value);
+        row[sumField] = 0;
+        row['id_категории'] = categorySelect.value;
+        row['комментарий'] = 'РЕКЛАССИФИКАЦИЯ к ' + rootId + ': ' +
+          oldName + ' → ' + newName + '. ' + reason;
+        shortDesc = 'Реклассификация к ' + rootId + ' (' + op.label + '): ' +
+          oldName + ' → ' + newName;
+      } else {
+        const delta = Number(deltaInput.value);
+        row[sumField] = delta;                            // §16.3, Морган #8
+        row['комментарий'] = 'КОРРЕКТИРОВКА к ' + rootId + ': ' + reason;
+        const sign = delta > 0 ? '+' : '−';
+        shortDesc = 'Корректировка к ' + rootId + ' (' + op.label + '): ' +
+          sign + money(Math.abs(delta));
+      }
       return {
         journalSheet: journal,
         opKey: op.key,
@@ -2831,9 +2938,14 @@ window.Forms = (() => {
         'в том же журнале со ссылкой на исходную.'),
       h('div', { class: 'op-footer-actions' }, cancelBtn, submitBtn));
 
-    const form = h('form', { class: 'op-form' },
-      summary, fDelta, fReason,
-      h('div', { class: 'op-divider' }), footer);
+    // Поля формы: для журналов с категорией добавляем переключатель
+    // режима и селект категории (скрыт/показан по режиму).
+    const formFields = [summary];
+    if (fKind) formFields.push(fKind);
+    formFields.push(fDelta);
+    if (fCategory) formFields.push(fCategory);
+    formFields.push(fReason, h('div', { class: 'op-divider' }), footer);
+    const form = h('form', { class: 'op-form' }, ...formFields);
 
     form.addEventListener('keydown', (e) => {
       if (e.altKey && e.key === 'Enter') {
