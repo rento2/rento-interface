@@ -19,7 +19,11 @@
   // не выбирая себя из списка повторно. ADR-025: общий пароль команды
   // убран, доступ контролируется через Google Share на боевой Sheets.
   const SESSION_KEY = 'rento_session_until';
-  const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+  // Сессия команды — сутки (запрос фаундера 04.06): за день не нужно
+  // повторно выбирать сотрудника после F5. Токен Google продлевается
+  // тихо в фоне (scheduleTokenRefresh), поэтому 24 часа реально держатся
+  // без ручного входа.
+  const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
   function sessionValid() {
     const until = Number(localStorage.getItem(SESSION_KEY) || 0);
@@ -37,6 +41,7 @@
   let indicatorSlot = null;   // место индикатора очереди в шапке
   let todayCtl = null;        // контроллер секции «сегодня» (reload)
   let refreshLabelTimer = null;
+  let tokenRefreshTimer = null;  // таймер тихого продления токена Google
 
   // --- помощники --------------------------------------------------------
 
@@ -69,6 +74,7 @@
     if (code === 401) {
       console.warn('Токен Google недействителен:', err);
       Cache.stopAutoRefresh();
+      stopTokenRefresh();
       Auth.clearToken();
       showConnect('Сессия Google истекла — подключитесь заново.');
       return true;
@@ -76,6 +82,7 @@
     if (code === 403) {
       console.warn('Google отказал в доступе (403):', err);
       Cache.stopAutoRefresh();
+      stopTokenRefresh();
       Auth.clearToken();
       showConnect('Google отказал в доступе к таблице (403). Ответ ' +
         'Google: «' + message + '». Проверьте: у выбранного аккаунта ' +
@@ -84,6 +91,29 @@
       return true;
     }
     return false;
+  }
+
+  // --- тихое продление токена Google (сессия на сутки) ------------------
+
+  // Запланировать фоновое продление токена за 5 минут до его истечения.
+  // На успехе onToken(mode='silent') обновит токен для Sheets и вызовет
+  // scheduleTokenRefresh заново — так токен живёт «вечно», пока жива
+  // сессия Google в браузере, и менеджер не логинится повторно каждый
+  // час. Если продлить тихо не удалось — ближайший 401 покажет экран
+  // подключения (handleSheetsError), это редкий фолбэк.
+  function scheduleTokenRefresh() {
+    stopTokenRefresh();
+    const token = Auth.storedToken();
+    if (!token) return;
+    const lead = 5 * 60 * 1000;            // обновить за 5 минут до конца
+    const delay = Math.max(10000, token.expires_at - Date.now() - lead);
+    tokenRefreshTimer = setTimeout(() => { Auth.requestTokenSilent(); }, delay);
+  }
+  function stopTokenRefresh() {
+    if (tokenRefreshTimer) {
+      clearTimeout(tokenRefreshTimer);
+      tokenRefreshTimer = null;
+    }
   }
 
   // --- индикатор очереди ------------------------------------------------
@@ -124,7 +154,9 @@
         showMain();
         return null;
       },
-      onSwitchAccount: () => { endUserSession(); Auth.clearToken(); showConnect(); },
+      onSwitchAccount: () => {
+        stopTokenRefresh(); endUserSession(); Auth.clearToken(); showConnect();
+      },
     });
   }
 
@@ -561,6 +593,7 @@
       await Cache.refresh();
       Cache.startAutoRefresh(handleSheetsError);
       Queue.start();
+      scheduleTokenRefresh();      // продлевать токен в фоне (сессия на сутки)
       // Сессия команды живёт 12 часов и переживает F5: если у нас уже
       // есть сохранённый сотрудник и сессия не истекла — сразу главный
       // экран, выбор сотрудника не нужен. Если сессия истекла или
@@ -581,14 +614,34 @@
     }
   }
 
-  function onToken(token, errorResp) {
+  function onToken(token, errorResp, mode) {
     if (!token) {
+      // Тихое продление не удалось (обычно: сессия Google в браузере
+      // завершилась). Не дёргаем пользователя сейчас — текущий токен ещё
+      // может действовать; когда он истечёт, ближайший вызов Sheets даст
+      // 401 и handleSheetsError покажет экран подключения. Перепланируем
+      // ещё одну попытку через минуту на случай разовой сетевой осечки.
+      if (mode === 'silent') {
+        console.warn('Тихое продление токена не удалось:', errorResp);
+        stopTokenRefresh();
+        tokenRefreshTimer = setTimeout(() => { Auth.requestTokenSilent(); }, 60000);
+        return;
+      }
       console.error('OAuth:', errorResp);
       const scopeDenied = errorResp && errorResp.error === 'scope_not_granted';
       showConnect(scopeDenied
         ? 'Доступ к Google Таблицам не выдан. Нажмите «Подключить» ещё ' +
           'раз и оставьте галочку доступа к Таблицам включённой.'
         : 'Google не выдал доступ. Повторите вход.');
+      return;
+    }
+    // Фоновое продление: только обновляем токен для Sheets и
+    // перепланируем — экран НЕ трогаем, чтобы не сбить пользователя
+    // с текущей формы. Полный startSession — только для интерактивного
+    // входа (он перерисовывает экран и может показать выбор сотрудника).
+    if (mode === 'silent') {
+      Sheets.setToken(token.access_token);
+      scheduleTokenRefresh();
       return;
     }
     startSession(token);
@@ -662,6 +715,19 @@
     });
     // Индикатор тикает раз в секунду — для обратного отсчёта ретрая (§5.3).
     setInterval(refreshIndicator, 1000);
+
+    // Ноутбук уснул / вкладку свернули — фоновый setTimeout мог не
+    // сработать вовремя, и токен успел истечь. При возврате на вкладку,
+    // если идёт активная сессия (tokenRefreshTimer стоит) и токен близок
+    // к концу или уже истёк, продлеваем тихо сразу — не дожидаясь 401.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible' || !tokenRefreshTimer) return;
+      const token = Auth.storedToken();
+      const lead = 5 * 60 * 1000;
+      if (!token || token.expires_at - Date.now() < lead) {
+        Auth.requestTokenSilent();
+      }
+    });
     appReady = true;
 
     const token = Auth.storedToken();
