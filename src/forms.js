@@ -1391,8 +1391,7 @@ window.Forms = (() => {
     const fCommission = field('Комиссия площадки ₽',
       h('div', { class: 'field-stack' }, commissionInput, commissionHint));
     const fExtra = field('Доп. оплата ₽',
-      h('div', { class: 'field-stack' }, extraInput, extraHint),
-      { aside: 'продление / ранний-поздний — 100% Ренто' });
+      h('div', { class: 'field-stack' }, extraInput, extraHint));
     const fNet = field('Чистая выручка ₽', netBox, { aside: 'авто' });
     const fOwner = field('Доход собственника ₽',
       h('div', { class: 'field-stack' }, ownerInput, ownerHint));
@@ -1691,14 +1690,14 @@ window.Forms = (() => {
       fObject,
       h('div', { class: 'field-row-2' }, fIn, fOut),
       fChannel);
-    // Поля ФИНАНСОВ — по 2 в ряд (фидбек фаундера 04.06: full-width
-    // слишком длинные). Чистая выручка — первой в своей паре, доп.оплата
-    // рядом справа. Площадка — отдельной строкой (нечётная).
+    // Поля ФИНАНСОВ — по 2 в ряд, все одной ширины (половина строки).
+    // Чистая выручка — первой в своей паре, доп.оплата рядом. Площадка
+    // нечётная — в паре с пустым спейсером, чтобы остаться половинной.
     const financeSection = section('ФИНАНСЫ',
       h('div', { class: 'field-row-2' }, fSum, fCommission),
       h('div', { class: 'field-row-2' }, fNet, fExtra),
       h('div', { class: 'field-row-2' }, fOwner, fRento),
-      fPlatform);
+      h('div', { class: 'field-row-2' }, fPlatform, h('div', { class: 'field' })));
     const distSection = section('РАСПРЕДЕЛЕНИЕ',
       // Подпись «Где деньги физически — сумма строк = чистой выручке»
       // убрана (ADR-014 п.4). Счётчик сошлось/не сошлось остаётся —
