@@ -772,6 +772,10 @@ body {
   flex-direction: column;
   gap: 4px;
   width: 100%;
+  /* родитель .dist-recipient — flex-строка; явно заполняем её и снимаем
+     min-content, иначе карточка может не дать строке реквизита полную ширину. */
+  flex: 1;
+  min-width: 0;
   padding: 8px 12px;
   background: var(--surface-2);
   border: 1.5px solid var(--border);
@@ -781,13 +785,23 @@ body {
 }
 .dist-owner.empty { color: var(--text-3); font-style: italic; }
 .dist-owner .owner-name { font-weight: 600; color: var(--ink); }
-.dist-owner .owner-req { color: var(--text-2); word-break: break-all; }
+.dist-owner .owner-req {
+  color: var(--text-2);
+  /* break-all рвал номер карты посимвольно (вертикально) внутри flex-строки
+     с кнопкой; anywhere переносит только при реальном переполнении. */
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
 .dist-owner .owner-req.empty {
-  color: var(--warning); font-style: italic; word-break: normal;
+  color: var(--warning); font-style: italic; overflow-wrap: normal;
 }
 .dist-owner .owner-req-row {
   display: flex; align-items: center; gap: 8px; justify-content: space-between;
+  width: 100%;
 }
+/* Текст реквизита заполняет строку и корректно сжимается рядом с кнопкой
+   (min-width:0 снимает flex-ловушку min-content, дававшую 1 символ в ширину). */
+.dist-owner .owner-req-row .owner-req { flex: 1; min-width: 0; }
 .copy-btn {
   flex: none;
   padding: 4px 10px;
