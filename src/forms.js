@@ -1691,13 +1691,13 @@ window.Forms = (() => {
       fObject,
       h('div', { class: 'field-row-2' }, fIn, fOut),
       fChannel);
-    // Все поля ФИНАНСОВ — в один столбец, одинаковой ширины (фидбек
-    // фаундера 04.06): без парных рядов и узких полей.
+    // Поля ФИНАНСОВ — по 2 в ряд (фидбек фаундера 04.06: full-width
+    // слишком длинные). Чистая выручка — первой в своей паре, доп.оплата
+    // рядом справа. Площадка — отдельной строкой (нечётная).
     const financeSection = section('ФИНАНСЫ',
-      fSum, fCommission,
-      fNet,
-      fExtra,
-      fOwner, fRento,
+      h('div', { class: 'field-row-2' }, fSum, fCommission),
+      h('div', { class: 'field-row-2' }, fNet, fExtra),
+      h('div', { class: 'field-row-2' }, fOwner, fRento),
       fPlatform);
     const distSection = section('РАСПРЕДЕЛЕНИЕ',
       // Подпись «Где деньги физически — сумма строк = чистой выручке»
