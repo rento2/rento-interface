@@ -22,7 +22,20 @@ window.RENTO_CONFIG = {
   // Scope Google Sheets API. spreadsheets (чтение+запись): TICKET-1.2
   // только читает, но Инкремент 2 будет писать — берём целевой scope
   // сразу, чтобы не было повторного consent.
-  OAUTH_SCOPE: 'https://www.googleapis.com/auth/spreadsheets',
+  // + userinfo.email: нужен, чтобы знать Google-аккаунт входящего и
+  // ограничить просмотр выплат ген.дира одним фаундером (FOUNDER_EMAIL).
+  OAUTH_SCOPE:
+    'https://www.googleapis.com/auth/spreadsheets ' +
+    'https://www.googleapis.com/auth/userinfo.email',
+
+  // Обязательный scope для проверки доступа. Email — вспомогательный:
+  // если пользователь снимет галочку, вход не блокируем (просто не
+  // узнаем почту → фаундер-функции скрыты). Критичны только Таблицы.
+  OAUTH_REQUIRED_SCOPE: 'https://www.googleapis.com/auth/spreadsheets',
+
+  // Google-аккаунт фаундера. Видит выплаты ген.дира в «Отчёте по
+  // сотруднику»; остальным эти строки скрыты (см. forms.js).
+  FOUNDER_EMAIL: 'mworkmsk@gmail.com',
 
   // Discovery-документ Sheets API v4 для gapi.client.
   SHEETS_DISCOVERY_DOC:

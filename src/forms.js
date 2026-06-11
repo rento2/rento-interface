@@ -3768,10 +3768,17 @@ window.Forms = (() => {
       id: r['id_мастера'], name: r['фио'] || r['id_мастера'],
       group: 'мастер', roleText: 'мастер', payType: 'мастер',
       accrSheet: CONFIG.JOURNAL_МАСТЕР, idCol: 'id_мастера', dateCol: 'дата' }));
-    Cache.forDropdown('спр_сотрудники').forEach((r) => PEOPLE.push({
-      id: r['id_сотрудника'], name: r['фио'] || r['id_сотрудника'],
-      group: 'сотрудник', roleText: r['роль'] || 'сотрудник', payType: 'сотрудник',
-      accrSheet: CONFIG.JOURNAL_МЕНЕДЖЕРЫ_СМЕНЫ, idCol: 'id_менеджера', dateCol: 'дата_смены' }));
+    // Выплаты ген.дира видит только фаундер (по Google-аккаунту). Прочим
+    // сотрудникам с этой ролью строки скрыты — их нет в выпадашке отчёта.
+    const isFounder = (Auth.getEmail() || '').trim().toLowerCase() ===
+      String(CONFIG.FOUNDER_EMAIL || '').trim().toLowerCase();
+    Cache.forDropdown('спр_сотрудники').forEach((r) => {
+      if (String(r['роль'] || '').trim() === 'ген.дир' && !isFounder) return;
+      PEOPLE.push({
+        id: r['id_сотрудника'], name: r['фио'] || r['id_сотрудника'],
+        group: 'сотрудник', roleText: r['роль'] || 'сотрудник', payType: 'сотрудник',
+        accrSheet: CONFIG.JOURNAL_МЕНЕДЖЕРЫ_СМЕНЫ, idCol: 'id_менеджера', dateCol: 'дата_смены' });
+    });
     const byId = {};
     PEOPLE.forEach((p) => { byId[p.id] = p; });
 

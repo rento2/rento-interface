@@ -21,6 +21,24 @@
 window.Auth = (() => {
   const CONFIG = window.RENTO_CONFIG;
   const TOKEN_KEY = 'rento_google_token';
+  const EMAIL_KEY = 'rento_google_email';
+
+  // Получить email Google-аккаунта по access_token (userinfo.email scope)
+  // и положить в localStorage. Fire-and-forget: вход не ждёт ответа, а к
+  // моменту захода в отчёт почта обычно уже известна. Ошибку гасим —
+  // без почты фаундер-функции просто останутся скрытыми.
+  function fetchEmail(accessToken) {
+    fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: 'Bearer ' + accessToken },
+    }).then((r) => (r.ok ? r.json() : null)).then((info) => {
+      if (info && info.email) localStorage.setItem(EMAIL_KEY, info.email);
+    }).catch(() => { /* почта не критична */ });
+  }
+
+  // Email текущего пользователя из localStorage либо ''.
+  function getEmail() {
+    return localStorage.getItem(EMAIL_KEY) || '';
+  }
 
   let tokenClient = null;
   let onTokenCallback = null;
@@ -41,7 +59,11 @@ window.Auth = (() => {
         // GIS позволяет пользователю снять галочку у запрошенного
         // scope на экране согласия. Без доступа к Таблицам токен
         // бесполезен (Sheets API вернёт 403) — ловим это сразу.
-        if (!google.accounts.oauth2.hasGrantedAllScopes(resp, CONFIG.OAUTH_SCOPE)) {
+        // Проверяем только КРИТИЧНЫЙ scope (Таблицы). Email —
+        // вспомогательный: его пользователь может не выдать, вход всё
+        // равно валиден (фаундер-функции просто скроются).
+        if (!google.accounts.oauth2.hasGrantedAllScopes(
+          resp, CONFIG.OAUTH_REQUIRED_SCOPE)) {
           onTokenCallback(null, { error: 'scope_not_granted' }, lastMode);
           return;
         }
@@ -51,6 +73,7 @@ window.Auth = (() => {
           expires_at: Date.now() + (Number(resp.expires_in) - 60) * 1000,
         };
         localStorage.setItem(TOKEN_KEY, JSON.stringify(token));
+        fetchEmail(resp.access_token);   // узнаём Google-аккаунт (фоном)
         onTokenCallback(token, null, lastMode);
       },
     });
@@ -91,6 +114,7 @@ window.Auth = (() => {
 
   function clearToken() {
     localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(EMAIL_KEY);
   }
 
   return {
@@ -99,5 +123,6 @@ window.Auth = (() => {
     requestTokenSilent,
     storedToken,
     clearToken,
+    getEmail,
   };
 })();
