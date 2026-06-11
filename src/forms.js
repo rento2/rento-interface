@@ -3739,38 +3739,106 @@ window.Forms = (() => {
     });
   }
 
-  // ============ «Отчёт по сотрудникам» (#4, витрина Морган) =============
-  // Read-only экран над витриной `отчёт_сотрудники_период`: два поля
-  // периода пишутся в C3/C4 листа (как даты), витрина пересчитывает
-  // формулы, затем читаем строки A6:G — начислено/выплачено/долг по
-  // операционному персоналу. `долг_на_старте` (колонка D) — ручной ввод
-  // фаундера в листе, экран его только показывает. Доступ обоим
-  // (блок «Отчётность»). Замечание: C3/C4 — общие ячейки витрины; при
-  // одновременной генерации двумя пользователями период перезапишется
-  // (для УК из 2 человек риск низкий).
+  // ============ «Отчёт по сотрудникам» (#4) ============================
+  // Детальный отчёт по ОДНОМУ сотруднику за период. Выбираем период +
+  // сотрудника (горничная / мастер / сотрудник). Данные читаем построчно
+  // из сырых журналов (не из витрины) и считаем на клиенте:
+  //   - горничные: уборки за период (адрес + стоимость) из журнал_уборки;
+  //   - мастера: задачи за период из журнал_мастер;
+  //   - сотрудники: начислено из журнал_менеджеры_смены (оклад в журналах
+  //     не начисляется → у окладных 0);
+  //   - выплаты за период из журнал_выплаты.
+  // «Долг Ренто» — полный текущий: opening (система_начальные_долги, на
+  // DEBT_START) + всё начислено − всё выплачено с DEBT_START. Совпадает с
+  // моделью витрины отчёт_сальдо_подрядчики (та же отсечка, её ячейка B3).
   function openОтчётСотрудники(opts) {
     const employee = opts.employee;
-    const SHEET = 'отчёт_сотрудники_период';
+    // Отсечка модели долга — миграционная граница. История до неё свёрнута
+    // в opening. Держать синхронно с B3 витрины отчёт_сальдо_подрядчики.
+    const DEBT_START = '2026-06-12';
+
+    // Кого можно выбрать: три справочника. group — ветка расчёта; payType —
+    // тип_получателя в журнал_выплаты; idCol/dateCol — поля журнала начислений.
+    const PEOPLE = [];
+    Cache.forDropdown('спр_горничные').forEach((r) => PEOPLE.push({
+      id: r['id_горничной'], name: r['фио'] || r['id_горничной'],
+      group: 'горничная', roleText: 'горничная', payType: 'горничная',
+      accrSheet: CONFIG.JOURNAL_УБОРКИ, idCol: 'id_горничной', dateCol: 'дата_уборки' }));
+    Cache.forDropdown('спр_мастера').forEach((r) => PEOPLE.push({
+      id: r['id_мастера'], name: r['фио'] || r['id_мастера'],
+      group: 'мастер', roleText: 'мастер', payType: 'мастер',
+      accrSheet: CONFIG.JOURNAL_МАСТЕР, idCol: 'id_мастера', dateCol: 'дата' }));
+    Cache.forDropdown('спр_сотрудники').forEach((r) => PEOPLE.push({
+      id: r['id_сотрудника'], name: r['фио'] || r['id_сотрудника'],
+      group: 'сотрудник', roleText: r['роль'] || 'сотрудник', payType: 'сотрудник',
+      accrSheet: CONFIG.JOURNAL_МЕНЕДЖЕРЫ_СМЕНЫ, idCol: 'id_менеджера', dateCol: 'дата_смены' }));
+    const byId = {};
+    PEOPLE.forEach((p) => { byId[p.id] = p; });
+
+    // Выпадашка сотрудника, сгруппированная по ролям (fillSelect optgroup
+    // не умеет — собираем вручную).
+    const empSelect = h('select', { class: 'field-input field-select' });
+    empSelect.append(h('option', { value: '' }, 'Выберите сотрудника…'));
+    [['Горничные', 'горничная'], ['Мастера', 'мастер'],
+      ['Сотрудники', 'сотрудник']].forEach(([label, grp]) => {
+      const og = h('optgroup', { label });
+      PEOPLE.filter((p) => p.group === grp).forEach((p) =>
+        og.append(h('option', { value: p.id }, p.name)));
+      if (og.children.length) empSelect.append(og);
+    });
 
     const fromEl = h('input', { class: 'field-input', type: 'date' });
     const toEl = h('input', { class: 'field-input', type: 'date' });
     const genBtn = h('button',
       { class: 'btn-primary btn-auto', type: 'submit' }, 'Сформировать');
 
+    const fEmp = field('Сотрудник', empSelect);
     const fFrom = field('Период с', fromEl);
     const fTo = field('Период по', toEl);
     const fieldsRow = h('div', { class: 'field-row-2' }, fFrom, fTo);
     const resultsBox = h('div', { class: 'op-search-results' });
     resultsBox.append(h('p', { class: 'muted' },
-      'Выберите период и нажмите «Сформировать» — покажем начислено, ' +
-      'выплачено и долг по каждому сотруднику за период.'));
+      'Выберите сотрудника и период, затем «Сформировать».'));
 
     function setStatus(text, cls) {
       UI.clear(resultsBox);
       resultsBox.append(h('p', { class: cls || 'muted' }, text));
     }
 
+    // Название объекта по id_объекта_версии (для адресов уборок).
+    const objName = {};
+    Cache.get('спр_объекты').forEach((o) => {
+      objName[o['id_версии']] =
+        o['название_короткое'] || o['адрес_полный'] || o['id_версии'];
+    });
+
+    const d10 = (v) => String(v || '').slice(0, 10);
+    const isActive = (d) =>
+      String(d['статус'] || '').trim().toLowerCase() === 'активна';
+    const sumOf = (recs, predicate) => recs.reduce(
+      (s, r) => (predicate(r.data) ? s + num(r.data['сумма_₽']) : s), 0);
+
+    // --- строители таблиц ---
+    function thRow(cells) {
+      return h('div', { class: 'today-row today-thead' },
+        ...cells.map((c, i) => h('div',
+          { class: 'tc ' + (i === cells.length - 1 ? 'tc-sum' : 'tc-desc') }, c)));
+    }
+    function dataRow(cells) {
+      return h('div', { class: 'today-row' },
+        ...cells.map((c, i) => h('div',
+          { class: 'tc ' + (i === cells.length - 1 ? 'tc-sum' : 'tc-desc') }, c)));
+    }
+    function totals(label, value) {
+      return h('div', { class: 'today-row today-total' },
+        h('div', { class: 'tc tc-desc' }, label),
+        h('div', { class: 'tc tc-sum' }, value));
+    }
+    const section = (t) => h('p', { class: 'eyebrow eyebrow-sub' }, t);
+
     async function generate() {
+      const p = byId[empSelect.value];
+      if (!p) { setStatus('Выберите сотрудника.', 'error-banner'); return; }
       if (!fromEl.value || !toEl.value) {
         setStatus('Укажите обе даты периода.', 'error-banner'); return;
       }
@@ -3779,13 +3847,11 @@ window.Forms = (() => {
       }
       setStatus('Считаем…');
       try {
-        // Период → C3/C4 (как даты, USER_ENTERED), затем читаем строки.
-        // Запись завершается до чтения (await), витрина пересчитывает
-        // формулы — getValues вернёт свежие значения.
-        await Sheets.updateRange("'" + SHEET + "'!C3", [fromEl.value]);
-        await Sheets.updateRange("'" + SHEET + "'!C4", [toEl.value]);
-        const values = await Sheets.getValues("'" + SHEET + "'!A6:G60");
-        renderTable(values);
+        const res = await Journal.readMany(
+          [p.accrSheet, CONFIG.JOURNAL_ВЫПЛАТЫ, 'система_начальные_долги']);
+        render(p, res[p.accrSheet].records,
+          res[CONFIG.JOURNAL_ВЫПЛАТЫ].records,
+          res['система_начальные_долги'].records);
       } catch (err) {
         console.error('Отчёт по сотрудникам:', err);
         setStatus('Не удалось сформировать отчёт: ' +
@@ -3793,53 +3859,108 @@ window.Forms = (() => {
       }
     }
 
-    function renderTable(values) {
+    function render(p, accrRecs, payRecs, openRecs) {
       UI.clear(resultsBox);
-      // row6 — заголовки витрины; данные с row7. Берём строки с непустым id.
-      const rows = (values || []).slice(1).filter((r) => r && r[0]);
-      if (!rows.length) {
-        resultsBox.append(h('p', { class: 'muted' },
-          'В витрине нет строк сотрудников.'));
-        return;
-      }
+      const inPeriod = (v) => {
+        const s = d10(v); return s >= fromEl.value && s <= toEl.value;
+      };
+      const sinceStart = (v) => d10(v) >= DEBT_START;
+      const my = (d) => d[p.idCol] === p.id && isActive(d);
+      const myPay = (d) => d['тип_получателя'] === p.payType &&
+        d['id_получателя'] === p.id && isActive(d);
+
       resultsBox.append(h('p', { class: 'muted' },
-        'Период: ' + fromEl.value + ' — ' + toEl.value + '.'));
-      const table = h('div', { class: 'today-table' });
-      table.append(h('div', { class: 'today-row today-thead' },
-        h('div', { class: 'tc tc-desc' }, 'СОТРУДНИК'),
-        h('div', { class: 'tc tc-type' }, 'РОЛЬ'),
-        h('div', { class: 'tc tc-sum' }, 'ДОЛГ СТАРТ'),
-        h('div', { class: 'tc tc-sum' }, 'НАЧИСЛЕНО'),
-        h('div', { class: 'tc tc-sum' }, 'ВЫПЛАЧЕНО'),
-        h('div', { class: 'tc tc-sum' }, 'ДОЛГ')));
-      // A id | B ФИО | C роль | D долг_старт | E начислено | F выплачено | G долг
-      rows.forEach((r) => {
-        table.append(h('div', { class: 'today-row' },
-          h('div', { class: 'tc tc-desc' }, r[1] || r[0]),
-          h('div', { class: 'tc tc-type' }, r[2] || ''),
-          h('div', { class: 'tc tc-sum' }, money(num(r[3]))),
-          h('div', { class: 'tc tc-sum' }, money(num(r[4]))),
-          h('div', { class: 'tc tc-sum' }, money(num(r[5]))),
-          h('div', { class: 'tc tc-sum' }, money(num(r[6])))));
-      });
-      resultsBox.append(table);
+        p.name + ' · ' + p.roleText + ' · период ' +
+        fromEl.value + ' — ' + toEl.value));
+
+      // --- начислено за период: построчно по роли ---
+      if (p.group === 'горничная') {
+        const ub = accrRecs.filter((r) => my(r.data) && inPeriod(r.data['дата_уборки']));
+        resultsBox.append(section('Уборки за период'));
+        if (ub.length) {
+          const t = h('div', { class: 'today-table' });
+          t.append(thRow(['ДАТА', 'АДРЕС', 'СТОИМОСТЬ']));
+          ub.forEach((r) => t.append(dataRow([
+            d10(r.data['дата_уборки']),
+            objName[r.data['id_объекта_версии']] || r.data['id_объекта_версии'] || '—',
+            money(num(r.data['сумма_₽']))])));
+          resultsBox.append(t);
+        } else {
+          resultsBox.append(h('p', { class: 'muted' }, 'Уборок за период нет.'));
+        }
+        resultsBox.append(totals('Кол-во уборок за период', String(ub.length)));
+        resultsBox.append(totals('К выплате за период',
+          money(sumOf(ub, () => true))));
+      } else if (p.group === 'мастер') {
+        const tasks = accrRecs.filter((r) => my(r.data) && inPeriod(r.data['дата']));
+        resultsBox.append(totals('Начислено за период',
+          money(sumOf(tasks, () => true))));
+        resultsBox.append(section('Выполненные задачи'));
+        if (tasks.length) {
+          const t = h('div', { class: 'today-table' });
+          t.append(thRow(['ДАТА', 'ЗАДАЧА', 'СУММА']));
+          tasks.forEach((r) => t.append(dataRow([
+            d10(r.data['дата']),
+            r.data['описание'] || r.data['тип_записи'] || '—',
+            money(num(r.data['сумма_₽']))])));
+          resultsBox.append(t);
+        } else {
+          resultsBox.append(h('p', { class: 'muted' }, 'Задач за период нет.'));
+        }
+      } else {
+        const sm = accrRecs.filter((r) => my(r.data) && inPeriod(r.data['дата_смены']));
+        resultsBox.append(totals('Начислено за период',
+          money(sumOf(sm, () => true))));
+        if (!sm.length) {
+          resultsBox.append(h('p', { class: 'muted' },
+            'Начислений по сменам нет (оклад в журналах не начисляется).'));
+        }
+      }
+
+      // --- выплаты за период (все роли) ---
+      resultsBox.append(h('div', { class: 'op-divider' }));
+      resultsBox.append(section('Оплачено за период'));
+      const pays = payRecs.filter((r) => myPay(r.data) && inPeriod(r.data['дата_выплаты']));
+      if (pays.length) {
+        const t = h('div', { class: 'today-table' });
+        t.append(thRow(['ДАТА ОПЛАТЫ', 'СУММА']));
+        pays.forEach((r) => t.append(dataRow([
+          d10(r.data['дата_выплаты']), money(num(r.data['сумма_₽']))])));
+        resultsBox.append(t);
+      } else {
+        resultsBox.append(h('p', { class: 'muted' }, 'Выплат за период нет.'));
+      }
+      resultsBox.append(totals('Итого выплачено за период',
+        money(sumOf(pays, () => true))));
+
+      // --- долг Ренто (текущий): opening + всё начислено − всё выплачено с DEBT_START ---
+      const openRow = openRecs.find((r) => r.data['id'] === p.id);
+      const opening = openRow ? num(openRow.data['долг_на_дату_₽']) : 0;
+      const accrAll = sumOf(accrRecs, (d) => my(d) && sinceStart(d[p.dateCol]));
+      const paidAll = sumOf(payRecs, (d) => myPay(d) && sinceStart(d['дата_выплаты']));
+      const debt = opening + accrAll - paidAll;
+      resultsBox.append(h('div', { class: 'op-divider' }));
+      resultsBox.append(totals(
+        debt >= 0 ? 'Долг Ренто (текущий)' : 'Переплата (текущая)',
+        money(Math.abs(debt))));
     }
 
     const form = h('form', { class: 'op-form op-search-form' },
+      fEmp,
       fieldsRow,
       h('div', { class: 'op-footer' },
         h('span', { class: 'op-footer-hint' },
-          'Долг на старте задаётся вручную в витрине (фаундер). ' +
-          'У окладных «начислено» = 0 (оклад в журналах не начисляется).'),
+          'Строки уборок/задач/выплат — за выбранный период. «Долг Ренто» — ' +
+          'полный текущий (стартовый долг + всё с ' + DEBT_START + ').'),
         h('div', { class: 'op-footer-actions' }, genBtn)),
       h('div', { class: 'op-divider' }),
       resultsBox);
     form.addEventListener('submit', (e) => { e.preventDefault(); generate(); });
 
     return Screens.formScreen({
-      employee, title: 'Отчёт по сотрудникам',
-      subtitle: 'Начислено, выплачено и долг по горничным, мастерам и ' +
-        'менеджерам за период.',
+      employee, title: 'Отчёт по сотруднику',
+      subtitle: 'Детально по одному сотруднику за период: уборки/задачи, ' +
+        'выплаты и текущий долг.',
       breadcrumb: 'Отчётность',
       content: form,
       onBack: () => opts.onExit(),

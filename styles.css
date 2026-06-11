@@ -633,6 +633,7 @@ body {
   letter-spacing: 1.32px;
   color: var(--text-3);
 }
+.today-total { background: var(--surface-1); font-weight: 700; }
 .row-cancelled { opacity: 0.55; }
 .tc { font-size: 14px; }
 .tc-check { width: 24px; flex: none; }
