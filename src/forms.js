@@ -1469,6 +1469,16 @@ window.Forms = (() => {
       const n = net();
       netBox._value.textContent = money(n);
 
+      // M4 (Фикс): доля собственника не применяется — собственнику платится
+      // фикс отдельно (обязательство считается в юнит-витрине, колонка O).
+      // Поле дохода собственника скрываем и фиксируем 0, чтобы вся чистая
+      // выручка ушла в доход Ренто (канон, DEVLOG 12.06). Менеджер не сможет
+      // случайно вписать долю на фикс-заселение.
+      const mNow = modelOf();
+      const isFix = mNow && String(mNow['тип']).trim().toLowerCase() === 'фикс';
+      fOwner.style.display = isFix ? 'none' : '';
+      if (isFix && num(ownerInput.value) !== 0) ownerInput.value = 0;
+
       const def = ownerDefault();
       if (def != null) {
         // Не перебито — подставляем дефолт.
