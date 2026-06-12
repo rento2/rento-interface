@@ -396,7 +396,10 @@ window.Forms = (() => {
         'дата_внесения': nowISO(),
         'id_менеджера': employee['id_сотрудника'], // стабильный ID, ADR-005
         'дата_уборки': dateEl.value,
-        'id_горничной': cleanerSelect.value,       // id_версии (грабли #1)
+        // Канон id_горничной — ГОЛЫЙ id (как в справочнике и журнал_выплаты),
+        // не id_версии. Иначе SUMIFS в отчёт_сальдо_подрядчики не привяжет
+        // уборку (он ищет голый CLN-xxx, а -v1 пролетает мимо).
+        'id_горничной': cleaner ? cleaner['id_горничной'] : cleanerSelect.value,
         'id_объекта_версии': objectSelect.value,
         'тип_уборки': typeSelect.value,
         'сумма_₽': sum,
