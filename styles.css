@@ -67,8 +67,9 @@ body {
 .logo-mark {
   width: 28px;
   height: 28px;
-  border-radius: 12px;
-  background: var(--lime-500);
+  /* Фирменный знак Ренто (lime-кружок с «P»). SVG самодостаточен — свои
+     градиенты/цвета; раньше тут был плейсхолдер-кружок (lime + radius). */
+  background: url("assets/rento-mark.svg?v=45") center / contain no-repeat;
 }
 .logo-text { font-size: 24px; font-weight: 900; letter-spacing: -0.8px; }
 

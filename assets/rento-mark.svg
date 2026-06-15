@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="512" height="512" role="img" aria-label="Rento">
+  <defs>
+    <radialGradient id="limeVol" cx="38%" cy="32%" r="80%">
+      <stop offset="0%" stop-color="#E4FF7A"></stop>
+      <stop offset="50%" stop-color="#CCFF00"></stop>
+      <stop offset="100%" stop-color="#BCEA22"></stop>
+    </radialGradient>
+    <radialGradient id="edgeShade" cx="50%" cy="88%" r="55%">
+      <stop offset="0%" stop-color="#0A0A0A" stop-opacity="0.07"></stop>
+      <stop offset="65%" stop-color="#0A0A0A" stop-opacity="0"></stop>
+    </radialGradient>
+  </defs>
+  <circle cx="48" cy="48" r="48" fill="url(#limeVol)"></circle>
+  <circle cx="48" cy="48" r="48" fill="url(#edgeShade)"></circle>
+  <path fill-rule="evenodd" fill="#0A0A0A" d="M31 75 V23 H51 A17.5 17.5 0 0 1 51 58 H42 V75 Z M42 33 V48 H50 A7.5 7.5 0 0 0 50 33 Z"></path>
+</svg>
