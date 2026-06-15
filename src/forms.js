@@ -1654,10 +1654,24 @@ window.Forms = (() => {
           .filter((r) => r['id_собственника'] === ownerId && isYes(r['активен']));
         const def = reqs.find((r) => isYes(r['по_умолчанию']));
         if (!def) {
+          // Карты «по умолчанию» нет. Заселение это БОЛЬШЕ не блокирует
+          // (решение фаундера 15.06): можно сохранить без реквизита либо
+          // завести карту прямо отсюда. Кнопка ведёт в форму реквизита с
+          // предвыбранным собственником; черновик заселения сохраняется и
+          // восстановится по возвращении.
+          const addBtn = h('button',
+            { class: 'link-btn', type: 'button' }, '+ добавить карту');
+          if (opts.onOpenНовыйРеквизит) {
+            addBtn.addEventListener('click', () =>
+              opts.onOpenНовыйРеквизит(ownerId));
+          } else {
+            addBtn.disabled = true;
+          }
           recipientSlot.append(h('div', { class: 'dist-owner' },
             h('div', { class: 'owner-name' }, owner['фио']),
             h('div', { class: 'owner-req empty' },
-              'нет реквизита «по умолчанию» — добавьте флаг в справочнике')));
+              'карты нет — можно сохранить без неё или завести:'),
+            addBtn));
           return;
         }
         derivedRequisiteId = def['id_реквизита'];
@@ -1842,9 +1856,12 @@ window.Forms = (() => {
         let bad = false;
         if (!t) bad = true;
         if (t && t.recipient && !r.recipient()) bad = true;
-        // Для строки «Собственнику напрямую» (ADR-014 п.1) реквизит
-        // обязателен — без него непонятно, куда платили.
-        if (t && t.recipient === 'из_квартиры' && !r.requisiteId()) bad = true;
+        // Реквизит собственника БОЛЬШЕ НЕ обязателен (решение фаундера
+        // 15.06): у собственника может не быть карты в справочнике, и
+        // это не повод блокировать заселение. Если карты нет — её можно
+        // завести прямо из строки («+ карту») либо сохранить без неё
+        // (id_реквизита уйдёт пустым). Раньше тут стоял жёсткий блок
+        // (ADR-014 п.1) — снят.
         if (!(r.sum() > 0)) bad = true;
         if (bad) { r.node.classList.add('dist-row-error'); ok = false; }
       });
@@ -3183,6 +3200,12 @@ window.Forms = (() => {
          'Касса задаётся типом строки распределения. Сумма всех строк ' +
          'должна сойтись с чистой выручкой — индикатор подсветит, ' +
          'если что-то не сходится.',
+         'Для строки «Собственнику напрямую» карта подставляется из ' +
+         'справочника. Если карты у собственника нет — заселение можно ' +
+         'сохранить и без неё, а саму карту завести по ссылке ' +
+         '«+ добавить карту» прямо в строке (или через «Справочники → ' +
+         'Реквизит собственника»). Чтобы новая карта подставлялась сама, ' +
+         'отметьте её «по умолчанию».',
          'Брони с Яндекса: деньги при заселении кассой НЕ проводятся — ' +
          'Яндекс всегда перечисляет их сам, на р/с, примерно через ' +
          '5 дней после выезда. Базовая выручка такой брони указывается ' +
@@ -3413,6 +3436,149 @@ window.Forms = (() => {
       employee, title: '+ Собственник',
       subtitle: 'Новая запись в спр_собственники. После сохранения ' +
         'собственник появится в выпадашках (квартира, выплата).',
+      breadcrumb: 'Справочники',
+      content: built.form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
+  // ============== «+ Реквизит собственника» (15.06.2026) ===============
+  // Карта/счёт собственника для выплат. Пишет строку в
+  // `спр_реквизиты_собственников` через тот же refSender, что и прочие
+  // справочники (id REQ-OWN-NNN). Раньше реквизиты заводились только
+  // руками в Sheets (ADR-026 отложил форму) — теперь доступно из
+  // интерфейса, в т.ч. прямо из строки распределения заселения, где у
+  // собственника не оказалось карты.
+  //
+  // Обязательно: собственник + номер карты/счёта. Опц.: название, тип,
+  // банк, получатель, комментарий. «По умолчанию» = да по дефолту —
+  // строка распределения заселения берёт именно дефолтный реквизит.
+  function openНовыйРеквизитСобственника(opts) {
+    const employee = opts.employee;
+    const formType = 'новый_реквизит';
+
+    const owners = Cache.forDropdown('спр_собственники');
+    const ownerSelect = selectInput();
+    fillSelect(ownerSelect, owners.map((o) => ({
+      value: o['id_собственника'], text: o['фио'],
+    })), owners.length ? 'Выберите…' : '— нет собственников, заведите сначала —');
+    if (opts.prefillOwnerId) ownerSelect.value = opts.prefillOwnerId;
+
+    const nameInput = textInput('Карта');
+    nameInput.value = 'Карта';
+    const typeSelect = selectInput();
+    fillSelect(typeSelect, [
+      { value: 'карта', text: 'карта' },
+      { value: 'счёт', text: 'счёт' },
+    ], false);
+    const numberInputEl = textInput('5280 4137 5303 9853 / номер счёта');
+    const bankInput = textInput('Сбербанк');
+    const receiverInput = textInput('ФИО получателя (как в банке)');
+    const defaultSelect = selectInput();
+    fillSelect(defaultSelect, [
+      { value: 'да', text: 'да — использовать по умолчанию' },
+      { value: 'нет', text: 'нет' },
+    ], false);
+    const commentInput = textarea('Заметки по реквизиту (необязательно)');
+
+    const fOwner = field('Собственник', ownerSelect);
+    const fName = field('Название', nameInput, { aside: 'необязательно' });
+    const fType = field('Тип', typeSelect);
+    const fNumber = field('Номер карты / счёта', numberInputEl);
+    const fBank = field('Банк', bankInput, { aside: 'необязательно' });
+    const fReceiver = field('Получатель', receiverInput, { aside: 'необязательно' });
+    const fDefault = field('По умолчанию', defaultSelect);
+    const fComment = field('Комментарий', commentInput, { aside: 'необязательно' });
+
+    // Подсказка: у собственника уже есть дефолтный реквизит — новый «да»
+    // его не отменит автоматически (в Sheets два «по умолчанию» уживутся,
+    // строка распределения возьмёт первый). Предупреждаем, не блокируем.
+    const dupHint = h('div', { class: 'field-hint' });
+    function checkDefault() {
+      const oid = ownerSelect.value;
+      if (!oid || defaultSelect.value !== 'да') { dupHint.textContent = ''; return; }
+      const has = Cache.get('спр_реквизиты_собственников').find((r) =>
+        r['id_собственника'] === oid && isYes(r['по_умолчанию']) && isYes(r['активен']));
+      dupHint.textContent = has
+        ? '⚠ У собственника уже есть реквизит «по умолчанию» (' +
+          (has['id_реквизита'] || '') + '). Два дефолта уживутся, но ' +
+          'распределение возьмёт прежний. Снимите старый флаг в Sheets, ' +
+          'если новый должен стать основным.'
+        : '';
+    }
+    ownerSelect.addEventListener('change', checkDefault);
+    defaultSelect.addEventListener('change', checkDefault);
+    fDefault.append(dupHint);
+
+    const draftNote = h('div', { class: 'draft-note', style: 'display:none' });
+
+    function snapshot() {
+      return {
+        собственник: ownerSelect.value, название: nameInput.value,
+        тип: typeSelect.value, номер: numberInputEl.value,
+        банк: bankInput.value, получатель: receiverInput.value,
+        по_умолчанию: defaultSelect.value, комментарий: commentInput.value,
+      };
+    }
+    function restore(d) {
+      ownerSelect.value = d.собственник || opts.prefillOwnerId || '';
+      nameInput.value = d.название != null ? d.название : 'Карта';
+      typeSelect.value = d.тип || 'карта';
+      numberInputEl.value = d.номер || '';
+      bankInput.value = d.банк || '';
+      receiverInput.value = d.получатель || '';
+      defaultSelect.value = d.по_умолчанию || 'да';
+      commentInput.value = d.комментарий || '';
+      checkDefault();
+    }
+    function validate() {
+      [fOwner, fNumber].forEach(clearError);
+      let ok = true;
+      if (!ownerSelect.value) { showError(fOwner, 'Выберите собственника'); ok = false; }
+      if (!numberInputEl.value.trim()) {
+        showError(fNumber, 'Укажите номер карты или счёта'); ok = false;
+      }
+      return ok;
+    }
+    function collect() {
+      const oid = ownerSelect.value;
+      const ownerName = (owners.find((o) => o['id_собственника'] === oid) || {})['фио'] || oid;
+      return {
+        sheet: 'спр_реквизиты_собственников',
+        keyColumns: ['id_собственника', 'номер'],
+        row: {
+          'id_собственника': oid,
+          'название': nameInput.value.trim() || 'Карта',
+          'тип': typeSelect.value || 'карта',
+          'номер': numberInputEl.value.trim(),
+          'банк': bankInput.value.trim(),
+          'получатель': receiverInput.value.trim(),
+          'по_умолчанию': defaultSelect.value || 'да',
+          'активен': 'да',
+          'комментарий': commentInput.value.trim(),
+        },
+        idPrefix: 'REQ-OWN',
+        idField: 'id_реквизита',
+        logType: 'реквизит',
+        shortDesc: 'Новый реквизит собственника: ' + ownerName,
+        managerId: employee['id_сотрудника'],
+      };
+    }
+
+    const built = composeForm({
+      formType, opts, draftNote, queueKey: 'новый_реквизит',
+      validate, collect,
+      fieldNodes: [fOwner, fName, fType, fNumber, fBank, fReceiver, fDefault, fComment],
+    });
+    setupDraft(formType, built.form, snapshot, restore, draftNote);
+    checkDefault();
+
+    return Screens.formScreen({
+      employee, title: '+ Реквизит собственника',
+      subtitle: 'Карта или счёт собственника для выплат. После сохранения ' +
+        'появится в распределении заселения и форме выплаты.',
       breadcrumb: 'Справочники',
       content: built.form,
       onBack: () => opts.onExit(),
@@ -4053,6 +4219,7 @@ window.Forms = (() => {
     openПоискОпераций, openКорректировка,
     openПомощь,
     openНовыйСобственник, openНоваяКвартира, openНовыйСотрудник, openНоваяГорничная,
+    openНовыйРеквизитСобственника,
     nextRefId,        // экспорт для sender'ов в app.js
   };
 })();

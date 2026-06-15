@@ -207,6 +207,7 @@
     'новая_квартира': Forms.openНоваяКвартира,
     'новый_сотрудник': Forms.openНовыйСотрудник,
     'новая_горничная': Forms.openНоваяГорничная,
+    'новый_реквизит': Forms.openНовыйРеквизитСобственника,
   };
 
   // Формы только для основателя, которых нет в реестре операций
@@ -273,6 +274,25 @@
         todayCtl = null;
         const scr = Forms.openЗаселение({
           employee, editOf: entry,
+          onRefresh: handleRefresh,
+          onLogout: () => { endUserSession(); showLogin(); },
+          onExit: showMain,
+          onOpenHelp: () => showФорма('помощь'),
+        });
+        indicatorSlot = scr.indicatorSlot;
+        refreshIndicator();
+      };
+    }
+    // Заселение: из строки распределения собственника можно завести карту,
+    // если её нет. Открываем форму реквизита с предвыбранным собственником;
+    // черновик заселения сохранён (saveDraft на input) и восстановится,
+    // когда менеджер снова откроет «Заселение». onExit обеих форм — главный
+    // экран (без стека форм: проще и надёжнее).
+    if (formType === 'заселение') {
+      callbacks.onOpenНовыйРеквизит = (ownerId) => {
+        todayCtl = null;
+        const scr = Forms.openНовыйРеквизитСобственника({
+          employee, prefillOwnerId: ownerId,
           onRefresh: handleRefresh,
           onLogout: () => { endUserSession(); showLogin(); },
           onExit: showMain,
@@ -600,6 +620,7 @@
     Queue.registerSender('новая_квартира', refSender);
     Queue.registerSender('новый_сотрудник', refSender);
     Queue.registerSender('новая_горничная', refSender);
+    Queue.registerSender('новый_реквизит', refSender);
 
     // Предложение новой категории (§14, TICKET-3.6). Пишет заявку в
     // _категории_на_модерации и аудит в _лог_действий. У листа модерации
@@ -755,7 +776,7 @@
       // обновить кеш — иначе выпадашки в других формах увидят новую
       // запись только после ручного «Обновить справочники». Тихий
       // refresh: если упадёт — handleSheetsError разберёт.
-      const REF_TYPES = ['новый_собственник', 'новая_квартира', 'новый_сотрудник', 'новая_горничная'];
+      const REF_TYPES = ['новый_собственник', 'новая_квартира', 'новый_сотрудник', 'новая_горничная', 'новый_реквизит'];
       if (item && REF_TYPES.includes(item.formType)) {
         Cache.refresh().catch(handleSheetsError);
       }
