@@ -4409,6 +4409,20 @@ window.Forms = (() => {
         : { 'ответственный': respSelect.value,
           'комментарий': noteInput.value.trim() }));
 
+      // Текст гостя бывает на пол-экрана (жалоба на 15 строк) — карточки
+      // разъезжаются по высоте и доска перестаёт читаться. Обрезаем до 3
+      // строк, полный текст — по кнопке. Кнопку показываем ТОЛЬКО если текст
+      // реально обрезан (замеряем после вставки в DOM — см. render()).
+      const descEl = h('p', { class: 'kb-desc' }, data['описание'] || '');
+      const moreBtn = h('button',
+        { class: 'kb-desc-more', type: 'button', style: 'display:none' },
+        'показать полностью');
+      moreBtn.addEventListener('click', () => {
+        const full = descEl.classList.toggle('kb-desc-full');
+        moreBtn.textContent = full ? 'свернуть' : 'показать полностью';
+      });
+      const descWrap = h('div', { class: 'kb-desc-wrap' }, descEl, moreBtn);
+
       const toggle = h('button', { class: 'kb-toggle', type: 'button' },
         (restricted ? '💬 комментарий' : '👤 ' + respName) +
         (data['комментарий'] ? ' · есть' : ''));
@@ -4443,7 +4457,7 @@ window.Forms = (() => {
           h('span', { class: 'kb-obj' },
             objByVersion[data['id_объекта_версии']] ||
             data['id_объекта_версии'] || '—')),
-        h('p', { class: 'kb-desc' }, data['описание'] || ''),
+        descWrap,
         toggle, details, moves,
         h('div', { class: 'kb-foot muted' }, pending ? 'отправляется…' :
           (id + (status === FINAL && data['дата_обновления']
@@ -4518,6 +4532,18 @@ window.Forms = (() => {
           column.classList.add('kb-col-locked');
         }
         boardBox.append(column);
+      });
+
+      // Замер после вставки в DOM: без него scrollHeight = 0. Кнопка нужна
+      // только тем карточкам, где текст не влез в 3 строки.
+      requestAnimationFrame(() => {
+        boardBox.querySelectorAll('.kb-desc-wrap').forEach((wrap) => {
+          const el = wrap.querySelector('.kb-desc');
+          const btn = wrap.querySelector('.kb-desc-more');
+          if (!el || !btn) return;
+          btn.style.display =
+            el.scrollHeight > el.clientHeight + 2 ? '' : 'none';
+        });
       });
     }
 

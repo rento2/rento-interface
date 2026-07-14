@@ -69,7 +69,7 @@ body {
   height: 28px;
   /* Фирменный знак Ренто (lime-кружок с «P»). SVG самодостаточен — свои
      градиенты/цвета; раньше тут был плейсхолдер-кружок (lime + radius). */
-  background: url("assets/rento-mark.svg?v=51") center / contain no-repeat;
+  background: url("assets/rento-mark.svg?v=52") center / contain no-repeat;
 }
 .logo-text { font-size: 24px; font-weight: 900; letter-spacing: -0.8px; }
 
@@ -989,11 +989,33 @@ body {
   margin-bottom: 6px;
 }
 .kb-obj { font-size: 13px; font-weight: 700; color: var(--ink); }
+/* Описание: ровно 3 строки, дальше — многоточие. Плюс min-height в те же
+   3 строки, чтобы короткая задача («Настройка тв») и длинная жалоба на
+   пол-экрана давали карточки ОДНОЙ высоты — иначе доска разъезжается. */
+.kb-desc-wrap { margin-bottom: 8px; }
 .kb-desc {
-  margin: 0 0 8px;
-  font-size: 13px; color: var(--text-body);
+  margin: 0;
+  font-size: 13px; line-height: 1.35; color: var(--text-body);
   white-space: pre-wrap;         /* менеджер пишет в несколько строк */
   overflow-wrap: anywhere;       /* длинный текст не рвёт карточку */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  min-height: calc(3 * 1.35em);
+}
+/* Развёрнутое состояние — по кнопке «показать полностью». */
+.kb-desc-full {
+  -webkit-line-clamp: unset;
+  display: block;
+  overflow: visible;
+  min-height: 0;
+}
+.kb-desc-more {
+  margin-top: 4px; padding: 0;
+  font-family: inherit; font-size: 12px; font-weight: 600;
+  color: var(--lime-700); background: none; border: none;
+  cursor: pointer; text-decoration: underline;
 }
 /* Дата создания — чипом (используется и в шапке карточки). */
 .task-date {
