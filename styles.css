@@ -69,7 +69,7 @@ body {
   height: 28px;
   /* Фирменный знак Ренто (lime-кружок с «P»). SVG самодостаточен — свои
      градиенты/цвета; раньше тут был плейсхолдер-кружок (lime + radius). */
-  background: url("assets/rento-mark.svg?v=48") center / contain no-repeat;
+  background: url("assets/rento-mark.svg?v=49") center / contain no-repeat;
 }
 .logo-text { font-size: 24px; font-weight: 900; letter-spacing: -0.8px; }
 
@@ -511,6 +511,11 @@ body {
 /* Расширяем карточку формы для экрана поиска (узкая 640px тесная под
    таблицу). Селектор — через op-search-form внутри op-card. */
 .op-card:has(.op-search-form) { width: 960px; }
+/* Доска задач — на всю рабочую ширину: три колонки в 640px нечитаемы
+   (текст гостя рвётся по 2-3 слова). Тот же приём, что у поиска: ширину
+   карточки задаёт её содержимое. Потолок — 1360px от .form-main, как у
+   главного экрана. */
+.op-card:has(.kb-board) { width: 100%; }
 
 @media (max-width: 720px) {
   .op-search-form .op-search-fields {
