@@ -4344,6 +4344,13 @@ window.Forms = (() => {
   // смежных колонок G..K), переживает обрыв сети.
   function openЗадачиСервис(opts) {
     const employee = opts.employee;
+    // Подрядчик (мастер/горничная) видит ТОЛЬКО свои задачи и не может
+    // переназначить ответственного — иначе перекинул бы задачу с себя.
+    // Роль синтезируется в Cache.activeEmployees по флагу справочника.
+    const role = String(employee['роль'] || '').trim().toLowerCase();
+    const restricted = role === 'мастер' || role === 'горничная' ||
+      role === 'подрядчик';
+    const myId = employee['id_сотрудника'];
     const people = taskPeople();
     const peopleById = {};
     people.forEach((p) => { peopleById[p.id] = p; });
@@ -4419,17 +4426,19 @@ window.Forms = (() => {
       noteInput.value = data['комментарий'] || '';
       const saveBtn = h('button',
         { class: 'kb-move-btn kb-save', type: 'button' }, 'Сохранить');
-      const details = h('div', { class: 'kb-details', style: 'display:none' },
-        field('Ответственный', respSelect),
-        field('Комментарий', noteInput),
-        saveBtn);
-      saveBtn.addEventListener('click', () => pushUpdate(data, {
-        'ответственный': respSelect.value,
-        'комментарий': noteInput.value.trim(),
-      }));
+      const details = h('div', { class: 'kb-details', style: 'display:none' });
+      if (!restricted) details.append(field('Ответственный', respSelect));
+      details.append(field('Комментарий', noteInput), saveBtn);
+      saveBtn.addEventListener('click', () => pushUpdate(data, restricted
+        // Подрядчик ответственного не трогает — шлём текущее значение,
+        // иначе патч затёр бы его пустотой.
+        ? { 'комментарий': noteInput.value.trim() }
+        : { 'ответственный': respSelect.value,
+          'комментарий': noteInput.value.trim() }));
 
       const toggle = h('button', { class: 'kb-toggle', type: 'button' },
-        '👤 ' + respName + (data['комментарий'] ? ' · есть комментарий' : ''));
+        (restricted ? '💬 комментарий' : '👤 ' + respName) +
+        (data['комментарий'] ? ' · есть' : ''));
       toggle.addEventListener('click', () => {
         const open = details.style.display !== 'none';
         details.style.display = open ? 'none' : '';
@@ -4534,7 +4543,11 @@ window.Forms = (() => {
         return;
       }
       tasks = res.records.map((r) => r.data)
-        .filter((d) => String(d['id_операции'] || '').trim());
+        .filter((d) => String(d['id_операции'] || '').trim())
+        // Подрядчик — только задачи, где ОН ответственный. Его id в
+        // `ответственный` — тот же bare-id, под которым он вошёл (MST-001).
+        .filter((d) => !restricted ||
+          String(d['ответственный'] || '').trim() === myId);
       render();
     }
 
@@ -4552,8 +4565,11 @@ window.Forms = (() => {
     load();
 
     return Screens.formScreen({
-      employee, title: 'Задачи по сервису',
-      subtitle: 'Обратная связь гостей на доске: новая → в работе → выполнено.',
+      employee, title: restricted ? 'Мои задачи' : 'Задачи по сервису',
+      subtitle: restricted
+        ? 'Ваши задачи. Двигайте карточку по мере работы: ' +
+          'новая → в работе → выполнено.'
+        : 'Обратная связь гостей на доске: новая → в работе → выполнено.',
       breadcrumb: 'Сервис',
       content: form,
       onBack: () => opts.onExit(),

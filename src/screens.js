@@ -178,6 +178,7 @@ window.Screens = (() => {
     app.innerHTML = '';
     const employee = opts.employee;
     const founder = opts.isFounder;
+    const restricted = opts.isRestricted;
 
     // --- шапка ---
     const { headerEl, indicatorSlot } = appHeader({
@@ -210,6 +211,21 @@ window.Screens = (() => {
         h('span', { class: 'form-card-label' }, label));
       if (active) node.addEventListener('click', () => opts.onOpenForm(formType));
       return node;
+    }
+
+    // Подрядчик (мастер/горничная с доступом) видит ТОЛЬКО доску задач:
+    // ни операций, ни отчётов, ни справочников. Ранний выход — блоки ниже
+    // просто не собираются (гейт продублирован в app.js showФорма).
+    if (opts.isRestricted) {
+      const only = h('section', { class: 'section' },
+        h('div', { class: 'section-head' },
+          h('span', { class: 'eyebrow' }, 'СЕРВИС'),
+          h('h2', { class: 'h2' }, 'Мои задачи')),
+        h('div', { class: 'cards-grid' },
+          card('Доска задач', 'задачи_сервис', '📋')));
+      const mainEl = h('main', { class: 'app-main' }, greet, only);
+      app.append(headerEl, mainEl);
+      return { indicatorSlot, todaySlot: h('div') };
     }
 
     const cardsGrid = h('div', { class: 'cards-grid' },

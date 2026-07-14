@@ -50,6 +50,19 @@
     return r === 'ген.дир' || r === 'основатель';
   }
 
+  // Ограниченная роль — подрядчик (мастер/горничная) с флагом
+  // `доступ_в_интерфейс` в своём справочнике (решение фаундера 15.06).
+  // Видит ТОЛЬКО доску «Задачи по сервису» и только свои задачи; журналы,
+  // отчёты и справочники ему не показываются.
+  //
+  // ⚠ Это ограничение ИНТЕРФЕЙСА, не безопасность: чтобы войти, подрядчику
+  // нужен Editor-доступ к боевому Sheets, и, открыв таблицу напрямую, он
+  // увидит все листы. Решение фаундера принято осознанно.
+  function isRestrictedRole(role) {
+    const r = String(role || '').trim().toLowerCase();
+    return r === 'мастер' || r === 'горничная' || r === 'подрядчик';
+  }
+
   // Текущий сотрудник из кеша по стабильному id_сотрудника (ADR-005).
   function currentEmployee() {
     const id = localStorage.getItem(USER_KEY);
@@ -168,10 +181,12 @@
       return;
     }
     const founder = isFounderRole(employee['роль']);
+    const restricted = isRestrictedRole(employee['роль']);
 
     const slots = Screens.main({
       employee,
       isFounder: founder,
+      isRestricted: restricted,
       onOpenForm: showФорма,
       onRefresh: handleRefresh,
       onLogout: () => { endUserSession(); showLogin(); },
@@ -181,12 +196,17 @@
     indicatorSlot = slots.indicatorSlot;
     refreshIndicator();
 
-    todayCtl = Screens.renderTodaySection(slots.todaySlot, {
-      employee,
-      isFounder: founder,
-      onRollback: rollbackOperations,
-      handleError: handleSheetsError,
-    });
+    // Секция «сегодня» собирает записи из всех журналов операций —
+    // подрядчику она не нужна (он ничего в них не пишет) и показывала бы
+    // ему чужие операции. Для ограниченной роли не рендерим.
+    if (!restricted) {
+      todayCtl = Screens.renderTodaySection(slots.todaySlot, {
+        employee,
+        isFounder: founder,
+        onRollback: rollbackOperations,
+        handleError: handleSheetsError,
+      });
+    }
   }
 
   // formType -> функция открытия формы (forms.js).
@@ -223,6 +243,9 @@
   // (Выплата/Batch) остаются за основателем через Operations.founderOnly.
   const FOUNDER_ONLY_FORMS = new Set();
 
+  // Что открыто ограниченной роли (подрядчик). Всё остальное — showMain.
+  const RESTRICTED_ALLOWED_FORMS = new Set(['задачи_сервис', 'помощь']);
+
   // Полноэкранный экран формы операции (ADR-006). Отмена, «← На главную»
   // и успешная отправка возвращают на главный экран через showMain.
   function showФорма(formType) {
@@ -241,6 +264,14 @@
     const op = Operations.get(formType);
     const founderOnly = (op && op.founderOnly) || FOUNDER_ONLY_FORMS.has(formType);
     if (founderOnly && !isFounderRole(employee['роль'])) {
+      showMain();
+      return;
+    }
+    // Подрядчику открыты РОВНО две вещи: доска задач и помощь. Гейт стоит
+    // здесь, а не только в карточках главного: карточек он не видит, но
+    // showФорма мог бы прийти в обход (сохранённая ссылка, отладка).
+    if (isRestrictedRole(employee['роль']) &&
+        !RESTRICTED_ALLOWED_FORMS.has(formType)) {
       showMain();
       return;
     }
