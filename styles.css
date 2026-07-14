@@ -69,7 +69,7 @@ body {
   height: 28px;
   /* Фирменный знак Ренто (lime-кружок с «P»). SVG самодостаточен — свои
      градиенты/цвета; раньше тут был плейсхолдер-кружок (lime + radius). */
-  background: url("assets/rento-mark.svg?v=47") center / contain no-repeat;
+  background: url("assets/rento-mark.svg?v=48") center / contain no-repeat;
 }
 .logo-text { font-size: 24px; font-weight: 900; letter-spacing: -0.8px; }
 
@@ -917,59 +917,112 @@ body {
   .op-footer-actions .btn-auto { width: 100%; }
 }
 
-/* --- задачи по сервису (15.06.2026) ---------------------------------- */
-.task-list { display: flex; flex-direction: column; gap: 14px; }
-.task-card {
-  padding: 14px 16px;
+/* --- задачи по сервису: канбан-доска (15.06.2026) --------------------- */
+.kb-board {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.kb-col {
+  display: flex; flex-direction: column; gap: 10px;
+  min-height: 120px;
+  padding: 12px;
   background: var(--surface-2);
   border: 1.5px solid var(--border);
   border-radius: var(--radius-field);
+  transition: border-color 0.12s, background 0.12s;
 }
-.task-head {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
-  margin-bottom: 8px;
-}
-.task-obj { font-weight: 700; color: var(--ink); }
-.task-meta { font-size: 12px; }
-.task-desc {
-  margin: 0 0 12px; font-size: 14px; color: var(--ink);
-  white-space: pre-wrap;               /* менеджер пишет в несколько строк */
-  overflow-wrap: anywhere;             /* длинный текст не рвёт карточку */
-}
-.task-badge {
-  padding: 2px 10px; border-radius: 999px;
-  font-size: 12px; font-weight: 700; white-space: nowrap;
-}
-.task-badge-new { background: var(--lime-500); color: #0a0a0a; }
-.task-badge-work { background: var(--warning); color: #fff; }
-.task-badge-done { background: var(--border); color: var(--text-2); }
-.task-controls {
-  display: grid; gap: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-}
-.task-actions {
-  display: flex; align-items: center; justify-content: flex-end; gap: 12px;
-  margin-top: 10px;
-}
-.task-state { font-size: 13px; }
-@media (max-width: 640px) {
-  .task-controls { grid-template-columns: 1fr; }
-  .task-actions .btn-auto { width: 100%; }
-}
+/* Колонка подсвечивается, когда над ней тащат карточку. */
+.kb-col-over { border-color: var(--lime-500); background: var(--lime-50); }
 
-/* Дата создания задачи — видной строкой в шапке карточки (не мелкий хвост). */
-.task-date {
-  padding: 2px 10px;
+.kb-col-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding-bottom: 8px;
+  border-bottom: 2px solid var(--border);
+}
+.kb-col-title {
+  font-size: 12px; font-weight: 700; letter-spacing: 1px;
+  text-transform: uppercase; color: var(--text-2);
+}
+.kb-col-count {
+  min-width: 24px; padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 12px; font-weight: 700; text-align: center;
+}
+.kb-col-new .kb-col-count { background: var(--lime-500); color: #0a0a0a; }
+.kb-col-work .kb-col-count { background: var(--warning); color: #fff; }
+.kb-col-done .kb-col-count { background: var(--border); color: var(--text-2); }
+/* Цветной кант колонки — статус читается боковым зрением. */
+.kb-col-new .kb-col-head { border-bottom-color: var(--lime-500); }
+.kb-col-work .kb-col-head { border-bottom-color: var(--warning); }
+
+.kb-col-body { display: flex; flex-direction: column; gap: 10px; }
+.kb-empty { font-size: 13px; font-style: italic; padding: 8px 2px; }
+.kb-more { align-self: flex-start; font-size: 13px; }
+
+.kb-card {
+  padding: 12px;
   background: var(--surface-0);
   border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-elev1);
+  cursor: grab;
+}
+.kb-card:active { cursor: grabbing; }
+.kb-dragging { opacity: 0.45; }
+.kb-card-open { box-shadow: var(--shadow-elev2); }
+
+.kb-card-top {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  margin-bottom: 6px;
+}
+.kb-obj { font-size: 13px; font-weight: 700; color: var(--ink); }
+.kb-desc {
+  margin: 0 0 8px;
+  font-size: 13px; color: var(--text-body);
+  white-space: pre-wrap;         /* менеджер пишет в несколько строк */
+  overflow-wrap: anywhere;       /* длинный текст не рвёт карточку */
+}
+/* Дата создания — чипом (используется и в шапке карточки). */
+.task-date {
+  padding: 2px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
   border-radius: var(--radius-pill);
-  font-size: 12px; font-weight: 700; color: var(--text-body);
+  font-size: 11px; font-weight: 700; color: var(--text-body);
   white-space: nowrap;
 }
-/* Заголовок блока выполненных в общем списке. */
-.task-sep {
-  margin-top: 6px; padding-top: 10px;
-  border-top: 1px solid var(--border);
-  font-size: 12px; font-weight: 700; letter-spacing: 1px;
-  text-transform: uppercase;
+
+.kb-toggle {
+  width: 100%; padding: 0; margin-bottom: 8px;
+  font-family: inherit; font-size: 12px; text-align: left;
+  color: var(--text-2); background: none; border: none;
+  cursor: pointer; text-decoration: underline;
+}
+.kb-details { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.kb-details .field-input { padding: 8px 10px; font-size: 13px; }
+.kb-details .field-label { font-size: 12px; }
+
+.kb-moves { display: flex; flex-wrap: wrap; gap: 6px; }
+.kb-move-btn {
+  padding: 6px 10px;
+  font-family: inherit; font-size: 12px; font-weight: 600;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.kb-move-btn:hover { background: var(--lime-100); border-color: var(--lime-500); }
+.kb-save { background: var(--lime-500); border-color: var(--lime-500); }
+
+.kb-foot { margin-top: 8px; font-size: 11px; }
+
+/* На узком экране доска складывается в колонку: менеджер листает статусы
+   сверху вниз, карточки двигает кнопками (DnD на мобильных не работает). */
+@media (max-width: 900px) {
+  .kb-board { grid-template-columns: 1fr; }
+  .kb-card { cursor: default; }
 }

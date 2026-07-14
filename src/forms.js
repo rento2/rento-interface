@@ -3217,10 +3217,10 @@ window.Forms = (() => {
         ['Обратная связь гостя, по которой нужно что-то исправить: ' +
          'выберите квартиру и запишите, что сказал гость. Ответственного ' +
          'можно не указывать — назначите позже.',
-         'Задача сразу уходит уведомлением основателю и появляется в ' +
-         'списке «Задачи — список». Там же двигается статус: новая → ' +
-         'в работе → выполнено. Статус может менять любой сотрудник; ' +
-         'кто менял — записывается.']],
+         'Задача сразу уходит уведомлением основателю и появляется на ' +
+         '«Доске задач» — доске из трёх колонок: новые → в работе → ' +
+         'выполнено. Карточку двигают кнопками или перетаскиванием ' +
+         'мышью. Двигать может любой сотрудник; кто двигал — записывается.']],
       ['+ Уборка',
         ['Запись об уборке: дата, горничная, объект, тип (плановая ' +
          'или генеральная). Сумма подставится автоматически из ставки ' +
@@ -4335,10 +4335,13 @@ window.Forms = (() => {
     });
   }
 
-  // ------------------- «Задачи по сервису» (список) -----------------------
-  // Читает лист задач, показывает карточки. Статус/ответственный/комментарий
-  // правятся прямо в карточке → уходит в очередь ('задача_обновление',
-  // in-place патч смежных колонок G..K через Journal.updateOperation).
+  // ------------------- «Задачи по сервису» (канбан) -----------------------
+  // Доска из трёх колонок по статусу: новая → в работе → выполнено.
+  // Карточку двигают кнопками (работают и на телефоне) либо перетаскиванием
+  // мышью (desktop, HTML5 drag&drop — прогрессивное улучшение; на мобильных
+  // DnD не работает, поэтому кнопки — основной путь, а не запасной).
+  // Любое движение уходит в очередь ('задача_обновление' → in-place патч
+  // смежных колонок G..K), переживает обрыв сети.
   function openЗадачиСервис(opts) {
     const employee = opts.employee;
     const people = taskPeople();
@@ -4349,31 +4352,24 @@ window.Forms = (() => {
       objByVersion[o['id_версии']] = o['название_короткое'] || o['id_версии'];
     });
 
-    // По умолчанию — ВЕСЬ список (запрос фаундера): всегда видно и что
-    // сделано, и что висит. Открытые идут первыми, выполненные — ниже.
-    const filterSelect = selectInput();
-    fillSelect(filterSelect, [
-      { value: 'все', text: 'Все задачи (открытые сверху)' },
-      { value: 'открытые', text: 'Только открытые' },
-      { value: 'выполненные', text: 'Только выполненные' },
-    ], false);
+    const COLUMNS = [
+      { status: 'новая', title: 'Новые', cls: 'kb-col-new' },
+      { status: 'в работе', title: 'В работе', cls: 'kb-col-work' },
+      { status: 'выполнено', title: 'Выполнено', cls: 'kb-col-done' },
+    ];
+    // Колонка «выполнено» растёт бесконечно — показываем свежие, остальное
+    // за ссылкой (доска не должна превращаться в архив).
+    const DONE_LIMIT = 12;
+
+    let tasks = [];              // все задачи листа (локальное состояние доски)
+    let showAllDone = false;
+    const boardBox = h('div', { class: 'kb-board' });
     const reloadBtn = h('button',
-      { class: 'btn-primary btn-auto', type: 'button' }, 'Обновить список');
-    const listBox = h('div', { class: 'task-list' });
+      { class: 'btn-primary btn-auto', type: 'button' }, 'Обновить доску');
 
     function setNote(text, cls) {
-      UI.clear(listBox);
-      listBox.append(h('p', { class: cls || 'muted' }, text));
-    }
-
-    function badge(status) {
-      const map = {
-        'новая': 'task-badge-new',
-        'в работе': 'task-badge-work',
-        'выполнено': 'task-badge-done',
-      };
-      return h('span', { class: 'task-badge ' + (map[status] || '') },
-        status || 'новая');
+      UI.clear(boardBox);
+      boardBox.append(h('p', { class: cls || 'muted' }, text));
     }
 
     // ISO-timestamp → дд.мм.гггг. Пустое/битое — прочерк, не «Invalid Date».
@@ -4383,74 +4379,151 @@ window.Forms = (() => {
       const [y, m, d] = s.split('-');
       return d + '.' + m + '.' + y;
     }
+    const statusOf = (d) => String(d['статус'] || 'новая').trim();
 
-    // Карточка задачи: шапка (квартира/дата/автор), текст гостя, контролы.
+    // Отправить изменение задачи (статус / ответственный / комментарий).
+    function pushUpdate(data, patch) {
+      Object.assign(data, patch);
+      Queue.add('задача_обновление', {
+        'id_операции': data['id_операции'],
+        'статус': statusOf(data),
+        'ответственный': data['ответственный'] || '',
+        'комментарий': data['комментарий'] || '',
+        'id_менеджера': employee['id_сотрудника'],
+        'краткое_описание': 'Задача ' + data['id_операции'] + ' → ' + statusOf(data),
+      });
+      // Дату закрытия рисуем сразу — сервер проставит ту же (очередь ретраит).
+      data['дата_обновления'] = new Date().toISOString();
+      render();
+    }
+
+    function moveBtn(label, data, toStatus) {
+      const btn = h('button', { class: 'kb-move-btn', type: 'button' }, label);
+      btn.addEventListener('click', () => pushUpdate(data, { 'статус': toStatus }));
+      return btn;
+    }
+
     function taskCard(data) {
       const id = data['id_операции'];
-      const statusSelect = selectInput();
-      fillSelect(statusSelect, (CONFIG.TASK_STATUSES || []).map((s) => ({
-        value: s, text: s,
-      })), false);
-      statusSelect.value = data['статус'] || 'новая';
+      const status = statusOf(data);
+      const respName = data['ответственный']
+        ? ((peopleById[data['ответственный']] || {}).name || data['ответственный'])
+        : 'не назначен';
 
+      // Детали (ответственный + комментарий) — под катом: в узкой колонке
+      // канбана постоянные селекты съедают всю карточку.
       const respSelect = selectInput();
       fillPeopleSelect(respSelect, people, '— не назначен —');
       respSelect.value = data['ответственный'] || '';
-
-      const noteInput = textInput('Что сделали / детали (необязательно)');
+      const noteInput = textInput('Что сделали / детали');
       noteInput.value = data['комментарий'] || '';
-
       const saveBtn = h('button',
-        { class: 'btn-primary btn-auto', type: 'button' }, 'Сохранить');
-      const stateNote = h('span', { class: 'task-state muted' });
+        { class: 'kb-move-btn kb-save', type: 'button' }, 'Сохранить');
+      const details = h('div', { class: 'kb-details', style: 'display:none' },
+        field('Ответственный', respSelect),
+        field('Комментарий', noteInput),
+        saveBtn);
+      saveBtn.addEventListener('click', () => pushUpdate(data, {
+        'ответственный': respSelect.value,
+        'комментарий': noteInput.value.trim(),
+      }));
 
-      const isDone = String(data['статус'] || '').trim() === 'выполнено';
-      const author = (peopleById[data['id_менеджера']] || {}).name ||
-        data['id_менеджера'] || '';
-      // Дата создания — отдельной видимой строкой (запрос фаундера), не
-      // прячем в мелкий мета-хвост. У выполненных дополнительно — дата
-      // закрытия: сразу видно, когда починили.
-      const head = h('div', { class: 'task-head' },
-        h('span', { class: 'task-date' }, shortDate(data['дата_внесения'])),
-        h('span', { class: 'task-obj' },
-          objByVersion[data['id_объекта_версии']] || data['id_объекта_версии'] || '—'),
-        badge(data['статус']),
-        h('span', { class: 'task-meta muted' },
-          id + ' · внёс ' + author +
-          (isDone && data['дата_обновления']
-            ? ' · выполнено ' + shortDate(data['дата_обновления']) : '')));
-
-      saveBtn.addEventListener('click', () => {
-        saveBtn.disabled = true;
-        stateNote.textContent = 'Сохраняем…';
-        Queue.add('задача_обновление', {
-          'id_операции': id,
-          'статус': statusSelect.value,
-          'ответственный': respSelect.value,
-          'комментарий': noteInput.value.trim(),
-          'id_менеджера': employee['id_сотрудника'],
-          'краткое_описание': 'Задача ' + id + ' → ' + statusSelect.value,
-        });
-        // Очередь ретраит сама; статус в карточке обновляем оптимистично.
-        data['статус'] = statusSelect.value;
-        data['ответственный'] = respSelect.value;
-        data['комментарий'] = noteInput.value.trim();
-        stateNote.textContent = '✓ в очереди на отправку';
-        saveBtn.disabled = false;
+      const toggle = h('button', { class: 'kb-toggle', type: 'button' },
+        '👤 ' + respName + (data['комментарий'] ? ' · есть комментарий' : ''));
+      toggle.addEventListener('click', () => {
+        const open = details.style.display !== 'none';
+        details.style.display = open ? 'none' : '';
+        card.classList.toggle('kb-card-open', !open);
       });
 
-      return h('div', { class: 'task-card' },
-        head,
-        h('p', { class: 'task-desc' }, data['описание'] || ''),
-        h('div', { class: 'task-controls' },
-          field('Статус', statusSelect),
-          field('Ответственный', respSelect, { aside: 'необязательно' }),
-          field('Комментарий', noteInput, { aside: 'необязательно' })),
-        h('div', { class: 'task-actions' }, stateNote, saveBtn));
+      // Кнопки движения — по текущей колонке (соседние статусы).
+      const moves = h('div', { class: 'kb-moves' });
+      if (status === 'новая') {
+        moves.append(moveBtn('В работу →', data, 'в работе'));
+      } else if (status === 'в работе') {
+        moves.append(moveBtn('← Новая', data, 'новая'),
+          moveBtn('Выполнено →', data, 'выполнено'));
+      } else {
+        moves.append(moveBtn('← Вернуть в работу', data, 'в работе'));
+      }
+
+      const card = h('div', { class: 'kb-card', draggable: 'true' },
+        h('div', { class: 'kb-card-top' },
+          h('span', { class: 'task-date' }, shortDate(data['дата_внесения'])),
+          h('span', { class: 'kb-obj' },
+            objByVersion[data['id_объекта_версии']] ||
+            data['id_объекта_версии'] || '—')),
+        h('p', { class: 'kb-desc' }, data['описание'] || ''),
+        toggle, details, moves,
+        h('div', { class: 'kb-foot muted' }, id +
+          (status === 'выполнено' && data['дата_обновления']
+            ? ' · закрыто ' + shortDate(data['дата_обновления']) : '')));
+
+      // Drag&drop (desktop). id задачи — единственное, что кладём в dataTransfer.
+      card.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/plain', id);
+        e.dataTransfer.effectAllowed = 'move';
+        card.classList.add('kb-dragging');
+      });
+      card.addEventListener('dragend', () => card.classList.remove('kb-dragging'));
+      return card;
+    }
+
+    function render() {
+      UI.clear(boardBox);
+      COLUMNS.forEach((col) => {
+        let list = tasks.filter((d) => statusOf(d) === col.status)
+          // Свежие сверху.
+          .sort((a, b) => String(b['дата_внесения'] || '')
+            .localeCompare(String(a['дата_внесения'] || '')));
+        const total = list.length;
+        let hidden = 0;
+        if (col.status === 'выполнено' && !showAllDone && total > DONE_LIMIT) {
+          hidden = total - DONE_LIMIT;
+          list = list.slice(0, DONE_LIMIT);
+        }
+
+        const body = h('div', { class: 'kb-col-body' });
+        if (!total) {
+          body.append(h('p', { class: 'kb-empty muted' }, 'пусто'));
+        } else {
+          list.forEach((d) => body.append(taskCard(d)));
+        }
+        if (hidden) {
+          const more = h('button', { class: 'link-btn kb-more', type: 'button' },
+            'показать ещё ' + hidden);
+          more.addEventListener('click', () => { showAllDone = true; render(); });
+          body.append(more);
+        }
+
+        const column = h('div', { class: 'kb-col ' + col.cls },
+          h('div', { class: 'kb-col-head' },
+            h('span', { class: 'kb-col-title' }, col.title),
+            h('span', { class: 'kb-col-count' }, String(total))),
+          body);
+
+        // Приём перетаскиваемой карточки: колонка = целевой статус.
+        column.addEventListener('dragover', (e) => {
+          e.preventDefault();                     // без этого drop не сработает
+          e.dataTransfer.dropEffect = 'move';
+          column.classList.add('kb-col-over');
+        });
+        column.addEventListener('dragleave', () =>
+          column.classList.remove('kb-col-over'));
+        column.addEventListener('drop', (e) => {
+          e.preventDefault();
+          column.classList.remove('kb-col-over');
+          const id = e.dataTransfer.getData('text/plain');
+          const data = tasks.find((t) => t['id_операции'] === id);
+          if (!data || statusOf(data) === col.status) return;
+          pushUpdate(data, { 'статус': col.status });
+        });
+        boardBox.append(column);
+      });
     }
 
     async function load() {
-      setNote('Загружаем задачи…');
+      setNote('Загружаем доску…');
       let res;
       try {
         res = await Journal.read(CONFIG.TASKS_SHEET);
@@ -4460,71 +4533,27 @@ window.Forms = (() => {
           ((err && err.message) || 'ошибка сети') + '.', 'error-banner');
         return;
       }
-      const mode = filterSelect.value;
-      const all = res.records
-        .map((r) => r.data)
+      tasks = res.records.map((r) => r.data)
         .filter((d) => String(d['id_операции'] || '').trim());
-      const statusOf = (d) => String(d['статус'] || 'новая').trim();
-      const isDone = (d) => statusOf(d) === 'выполнено';
-
-      const rows = all.filter((d) => {
-        if (mode === 'открытые') return !isDone(d);
-        if (mode === 'выполненные') return isDone(d);
-        return true;                                   // «все» — по умолчанию
-      }).sort((a, b) => {
-        // Открытые всегда выше выполненных, внутри группы — свежие сверху.
-        // Так весь список читается сразу: что висит и что уже закрыли.
-        if (isDone(a) !== isDone(b)) return isDone(a) ? 1 : -1;
-        return String(b['дата_внесения'] || '')
-          .localeCompare(String(a['дата_внесения'] || ''));
-      });
-
-      UI.clear(listBox);
-      if (!rows.length) {
-        listBox.append(h('p', { class: 'muted' },
-          mode === 'открытые' ? 'Открытых задач нет — всё закрыто.'
-            : mode === 'выполненные' ? 'Выполненных задач пока нет.'
-              : 'Задач пока нет.'));
-        return;
-      }
-      // Счётчик по всему листу (не по фильтру) — картина целиком всегда
-      // перед глазами, даже если сейчас смотришь срез.
-      const openCnt = all.filter((d) => !isDone(d)).length;
-      const workCnt = all.filter((d) => statusOf(d) === 'в работе').length;
-      listBox.append(h('p', { class: 'muted' },
-        'Всего ' + all.length + ' · открытых ' + openCnt +
-        ' (в работе ' + workCnt + ') · выполнено ' + (all.length - openCnt)));
-
-      // Разделитель перед блоком выполненных (только в режиме «все»).
-      let doneHeaderShown = false;
-      rows.forEach((d) => {
-        if (mode === 'все' && isDone(d) && !doneHeaderShown && openCnt) {
-          doneHeaderShown = true;
-          listBox.append(h('p', { class: 'task-sep muted' }, 'Выполненные'));
-        }
-        listBox.append(taskCard(d));
-      });
+      render();
     }
 
-    filterSelect.addEventListener('change', load);
     reloadBtn.addEventListener('click', load);
 
     const form = h('form', { class: 'op-form' },
-      h('div', { class: 'op-search-fields' }, field('Показывать', filterSelect)),
       h('div', { class: 'op-footer' },
         h('span', { class: 'op-footer-hint' },
-          'Меняйте статус и ответственного прямо в карточке — «Сохранить» ' +
-          'отправит изменение (переживает обрыв сети).'),
+          'Двигайте карточки кнопками или мышью между колонками. ' +
+          'Изменения уходят сразу и переживают обрыв сети.'),
         h('div', { class: 'op-footer-actions' }, reloadBtn)),
       h('div', { class: 'op-divider' }),
-      listBox);
+      boardBox);
     form.addEventListener('submit', (e) => { e.preventDefault(); load(); });
     load();
 
     return Screens.formScreen({
       employee, title: 'Задачи по сервису',
-      subtitle: 'Обратная связь гостей и что по ней сделано. Статус: ' +
-        'новая → в работе → выполнено.',
+      subtitle: 'Обратная связь гостей на доске: новая → в работе → выполнено.',
       breadcrumb: 'Сервис',
       content: form,
       onBack: () => opts.onExit(),
