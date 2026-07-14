@@ -4349,10 +4349,13 @@ window.Forms = (() => {
       objByVersion[o['id_версии']] = o['название_короткое'] || o['id_версии'];
     });
 
+    // По умолчанию — ВЕСЬ список (запрос фаундера): всегда видно и что
+    // сделано, и что висит. Открытые идут первыми, выполненные — ниже.
     const filterSelect = selectInput();
     fillSelect(filterSelect, [
-      { value: 'открытые', text: 'Открытые (новые + в работе)' },
-      { value: 'все', text: 'Все задачи' },
+      { value: 'все', text: 'Все задачи (открытые сверху)' },
+      { value: 'открытые', text: 'Только открытые' },
+      { value: 'выполненные', text: 'Только выполненные' },
     ], false);
     const reloadBtn = h('button',
       { class: 'btn-primary btn-auto', type: 'button' }, 'Обновить список');
@@ -4371,6 +4374,14 @@ window.Forms = (() => {
       };
       return h('span', { class: 'task-badge ' + (map[status] || '') },
         status || 'новая');
+    }
+
+    // ISO-timestamp → дд.мм.гггг. Пустое/битое — прочерк, не «Invalid Date».
+    function shortDate(v) {
+      const s = String(v || '').slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return '—';
+      const [y, m, d] = s.split('-');
+      return d + '.' + m + '.' + y;
     }
 
     // Карточка задачи: шапка (квартира/дата/автор), текст гостя, контролы.
@@ -4393,14 +4404,21 @@ window.Forms = (() => {
         { class: 'btn-primary btn-auto', type: 'button' }, 'Сохранить');
       const stateNote = h('span', { class: 'task-state muted' });
 
+      const isDone = String(data['статус'] || '').trim() === 'выполнено';
+      const author = (peopleById[data['id_менеджера']] || {}).name ||
+        data['id_менеджера'] || '';
+      // Дата создания — отдельной видимой строкой (запрос фаундера), не
+      // прячем в мелкий мета-хвост. У выполненных дополнительно — дата
+      // закрытия: сразу видно, когда починили.
       const head = h('div', { class: 'task-head' },
+        h('span', { class: 'task-date' }, shortDate(data['дата_внесения'])),
         h('span', { class: 'task-obj' },
           objByVersion[data['id_объекта_версии']] || data['id_объекта_версии'] || '—'),
         badge(data['статус']),
         h('span', { class: 'task-meta muted' },
-          id + ' · ' + String(data['дата_внесения'] || '').slice(0, 10) +
-          ' · ' + ((peopleById[data['id_менеджера']] || {}).name ||
-            data['id_менеджера'] || '')));
+          id + ' · внёс ' + author +
+          (isDone && data['дата_обновления']
+            ? ' · выполнено ' + shortDate(data['дата_обновления']) : '')));
 
       saveBtn.addEventListener('click', () => {
         saveBtn.disabled = true;
@@ -4442,26 +4460,50 @@ window.Forms = (() => {
           ((err && err.message) || 'ошибка сети') + '.', 'error-banner');
         return;
       }
-      const openOnly = filterSelect.value === 'открытые';
-      const rows = res.records
+      const mode = filterSelect.value;
+      const all = res.records
         .map((r) => r.data)
-        .filter((d) => String(d['id_операции'] || '').trim())
-        .filter((d) => !openOnly ||
-          String(d['статус'] || 'новая').trim() !== 'выполнено')
-        // Свежие сверху: задачи копятся, старое закрытое вниз.
-        .sort((a, b) => String(b['дата_внесения'] || '')
-          .localeCompare(String(a['дата_внесения'] || '')));
+        .filter((d) => String(d['id_операции'] || '').trim());
+      const statusOf = (d) => String(d['статус'] || 'новая').trim();
+      const isDone = (d) => statusOf(d) === 'выполнено';
+
+      const rows = all.filter((d) => {
+        if (mode === 'открытые') return !isDone(d);
+        if (mode === 'выполненные') return isDone(d);
+        return true;                                   // «все» — по умолчанию
+      }).sort((a, b) => {
+        // Открытые всегда выше выполненных, внутри группы — свежие сверху.
+        // Так весь список читается сразу: что висит и что уже закрыли.
+        if (isDone(a) !== isDone(b)) return isDone(a) ? 1 : -1;
+        return String(b['дата_внесения'] || '')
+          .localeCompare(String(a['дата_внесения'] || ''));
+      });
 
       UI.clear(listBox);
       if (!rows.length) {
-        listBox.append(h('p', { class: 'muted' }, openOnly
-          ? 'Открытых задач нет — всё закрыто.'
-          : 'Задач пока нет.'));
+        listBox.append(h('p', { class: 'muted' },
+          mode === 'открытые' ? 'Открытых задач нет — всё закрыто.'
+            : mode === 'выполненные' ? 'Выполненных задач пока нет.'
+              : 'Задач пока нет.'));
         return;
       }
+      // Счётчик по всему листу (не по фильтру) — картина целиком всегда
+      // перед глазами, даже если сейчас смотришь срез.
+      const openCnt = all.filter((d) => !isDone(d)).length;
+      const workCnt = all.filter((d) => statusOf(d) === 'в работе').length;
       listBox.append(h('p', { class: 'muted' },
-        'Задач: ' + rows.length + (openOnly ? ' (открытых)' : ' (всего)')));
-      rows.forEach((d) => listBox.append(taskCard(d)));
+        'Всего ' + all.length + ' · открытых ' + openCnt +
+        ' (в работе ' + workCnt + ') · выполнено ' + (all.length - openCnt)));
+
+      // Разделитель перед блоком выполненных (только в режиме «все»).
+      let doneHeaderShown = false;
+      rows.forEach((d) => {
+        if (mode === 'все' && isDone(d) && !doneHeaderShown && openCnt) {
+          doneHeaderShown = true;
+          listBox.append(h('p', { class: 'task-sep muted' }, 'Выполненные'));
+        }
+        listBox.append(taskCard(d));
+      });
     }
 
     filterSelect.addEventListener('change', load);

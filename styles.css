@@ -69,7 +69,7 @@ body {
   height: 28px;
   /* Фирменный знак Ренто (lime-кружок с «P»). SVG самодостаточен — свои
      градиенты/цвета; раньше тут был плейсхолдер-кружок (lime + radius). */
-  background: url("assets/rento-mark.svg?v=46") center / contain no-repeat;
+  background: url("assets/rento-mark.svg?v=47") center / contain no-repeat;
 }
 .logo-text { font-size: 24px; font-weight: 900; letter-spacing: -0.8px; }
 
@@ -955,4 +955,21 @@ body {
 @media (max-width: 640px) {
   .task-controls { grid-template-columns: 1fr; }
   .task-actions .btn-auto { width: 100%; }
+}
+
+/* Дата создания задачи — видной строкой в шапке карточки (не мелкий хвост). */
+.task-date {
+  padding: 2px 10px;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  font-size: 12px; font-weight: 700; color: var(--text-body);
+  white-space: nowrap;
+}
+/* Заголовок блока выполненных в общем списке. */
+.task-sep {
+  margin-top: 6px; padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12px; font-weight: 700; letter-spacing: 1px;
+  text-transform: uppercase;
 }
