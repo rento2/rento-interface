@@ -208,6 +208,9 @@
     'новый_сотрудник': Forms.openНовыйСотрудник,
     'новая_горничная': Forms.openНоваяГорничная,
     'новый_реквизит': Forms.openНовыйРеквизитСобственника,
+    // Сервис (15.06.2026): обратная связь гостей → задачи на исправление.
+    'задача_сервис': Forms.openЗадачаСервис,
+    'задачи_сервис': Forms.openЗадачиСервис,
   };
 
   // Формы только для основателя, которых нет в реестре операций
@@ -621,6 +624,70 @@
     Queue.registerSender('новый_сотрудник', refSender);
     Queue.registerSender('новая_горничная', refSender);
     Queue.registerSender('новый_реквизит', refSender);
+
+    // --- Задачи по сервису (15.06.2026) ---------------------------------
+    // Создание задачи. Не финансовая операция: своё пространство id
+    // (TSK-NNN через nextRefId), лист вне CONFIG.JOURNALS — сквозной
+    // OP-счётчик не трогаем. Идемпотентность — по client_uuid очереди
+    // (ретрай не создаст дубль).
+    Queue.registerSender('задача_сервис', async (formData, clientUuid) => {
+      const sheet = CONFIG.TASKS_SHEET;
+      const { headers, records } = await Journal.read(sheet);
+      const dup = records.find((r) => r.data['client_uuid'] === clientUuid);
+      if (dup) return { id: dup.data['id_операции'] };
+
+      const id = Forms.nextRefId(records.map((r) => r.data), 'TSK', 'id_операции');
+      const row = {
+        'id_операции': id,
+        'дата_внесения': new Date().toISOString(),
+        'id_менеджера': formData['id_менеджера'],
+        'id_объекта_версии': formData['id_объекта_версии'],
+        'описание': formData['описание'],
+        'источник': formData['источник'] || 'гость',
+        'статус': formData['статус'] || 'новая',
+        'ответственный': formData['ответственный'] || '',
+        'комментарий': '',
+        'дата_обновления': '',
+        'id_обновил': '',
+        // tg_отправлено НЕ трогаем — его ставит Apps Script после пуша
+        // в Telegram (пустое = ещё не уведомляли).
+        'tg_отправлено': '',
+        'client_uuid': clientUuid,
+      };
+      await Sheets.appendRow(sheet, headers.map(
+        (h) => (row[h] !== undefined && row[h] !== null ? row[h] : '')));
+      await Journal.logAction({
+        'timestamp': new Date().toISOString(),
+        'id_менеджера': formData['id_менеджера'],
+        'действие': 'создание',
+        'id_операции': id,
+        'тип_операции': 'задача_сервис',
+        'краткое_описание': formData['краткое_описание'] || '',
+      });
+      return { id };
+    });
+
+    // Смена статуса/ответственного/комментария. In-place патч смежных
+    // колонок G..K (Journal.updateOperation — та же механика, что откат).
+    // Повторное применение безопасно: те же значения лягут повторно.
+    Queue.registerSender('задача_обновление', async (formData) => {
+      await Journal.updateOperation(CONFIG.TASKS_SHEET, formData['id_операции'], {
+        'статус': formData['статус'],
+        'ответственный': formData['ответственный'] || '',
+        'комментарий': formData['комментарий'] || '',
+        'дата_обновления': new Date().toISOString(),
+        'id_обновил': formData['id_менеджера'],
+      });
+      await Journal.logAction({
+        'timestamp': new Date().toISOString(),
+        'id_менеджера': formData['id_менеджера'],
+        'действие': 'редактирование',
+        'id_операции': formData['id_операции'],
+        'тип_операции': 'задача_сервис',
+        'краткое_описание': formData['краткое_описание'] || '',
+      });
+      return {};
+    });
 
     // Предложение новой категории (§14, TICKET-3.6). Пишет заявку в
     // _категории_на_модерации и аудит в _лог_действий. У листа модерации

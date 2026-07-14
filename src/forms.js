@@ -3213,6 +3213,14 @@ window.Forms = (() => {
          'кассовой строкой проходит только доп.оплата (продление, ' +
          'ранний заезд), если гость платил живыми деньгами при ' +
          'заселении.']],
+      ['+ Задача по сервису',
+        ['Обратная связь гостя, по которой нужно что-то исправить: ' +
+         'выберите квартиру и запишите, что сказал гость. Ответственного ' +
+         'можно не указывать — назначите позже.',
+         'Задача сразу уходит уведомлением основателю и появляется в ' +
+         'списке «Задачи — список». Там же двигается статус: новая → ' +
+         'в работе → выполнено. Статус может менять любой сотрудник; ' +
+         'кто менял — записывается.']],
       ['+ Уборка',
         ['Запись об уборке: дата, горничная, объект, тип (плановая ' +
          'или генеральная). Сумма подставится автоматически из ставки ' +
@@ -4213,10 +4221,281 @@ window.Forms = (() => {
     });
   }
 
+  // ============ «Задачи по сервису» (15.06.2026, запрос фаундера) ==========
+  // Обратная связь гостей → задачи на исправление. Менеджер заводит задачу,
+  // любой сотрудник двигает статус (новая → в работе → выполнено), кто менял
+  // — пишется в строку и в _лог_действий. Ответственный опционален.
+  //
+  // Лист `журнал_задачи_сервис`, id TSK-NNN — своё пространство, вне сквозного
+  // OP-счётчика (ADR-009): задача не финансовая операция и не должна утяжелять
+  // batchGet транзакции заселения.
+  //
+  // Telegram (пуш новой задачи + недельный/месячный дайджест) шлёт Apps Script
+  // внутри самой таблицы: репозиторий интерфейса публичный, токен бота в код
+  // класть нельзя. Клиент только пишет строку; колонку `tg_отправлено` ставит
+  // скрипт — чтобы одно и то же уведомление не приходило дважды.
+
+  // Люди для «Ответственного»: три справочника, bare-id (канон ключей).
+  function taskPeople() {
+    const people = [];
+    Cache.forDropdown('спр_горничные').forEach((r) => people.push({
+      id: r['id_горничной'], name: r['фио'] || r['id_горничной'], group: 'горничная' }));
+    Cache.forDropdown('спр_мастера').forEach((r) => people.push({
+      id: r['id_мастера'], name: r['фио'] || r['id_мастера'], group: 'мастер' }));
+    Cache.forDropdown('спр_сотрудники').forEach((r) => people.push({
+      id: r['id_сотрудника'], name: r['фио'] || r['id_сотрудника'], group: 'сотрудник' }));
+    return people;
+  }
+  // Выпадашка людей с optgroup по ролям (fillSelect optgroup не умеет).
+  function fillPeopleSelect(select, people, placeholder) {
+    select.innerHTML = '';
+    select.append(h('option', { value: '' }, placeholder));
+    [['Горничные', 'горничная'], ['Мастера', 'мастер'],
+      ['Сотрудники', 'сотрудник']].forEach(([label, grp]) => {
+      const og = h('optgroup', { label });
+      people.filter((p) => p.group === grp).forEach((p) =>
+        og.append(h('option', { value: p.id }, p.name)));
+      if (og.children.length) select.append(og);
+    });
+  }
+
+  // ---------------------- «+ Задача по сервису» ---------------------------
+  function openЗадачаСервис(opts) {
+    const employee = opts.employee;
+    const formType = 'задача_сервис';
+
+    const objects = Cache.forDropdown('спр_объекты');
+    const objectSelect = selectInput();
+    fillSelect(objectSelect, objects.map((o) => ({
+      value: o['id_версии'], text: o['название_короткое'],
+    })));
+    const descInput = textarea(
+      'Что сказал гость: что не так, что нужно исправить');
+    const people = taskPeople();
+    const respSelect = selectInput();
+    fillPeopleSelect(respSelect, people, '— пока не назначен —');
+
+    const fObject = field('Квартира', objectSelect);
+    const fDesc = field('Обратная связь гостя / что исправить', descInput);
+    const fResp = field('Ответственный', respSelect, { aside: 'необязательно' });
+
+    const draftNote = h('div', { class: 'draft-note', style: 'display:none' });
+
+    function snapshot() {
+      return {
+        объект: objectSelect.value, описание: descInput.value,
+        ответственный: respSelect.value,
+      };
+    }
+    function restore(d) {
+      objectSelect.value = d.объект || '';
+      descInput.value = d.описание || '';
+      respSelect.value = d.ответственный || '';
+    }
+    function validate() {
+      [fObject, fDesc].forEach(clearError);
+      let ok = true;
+      if (!objectSelect.value) { showError(fObject, 'Выберите квартиру'); ok = false; }
+      if (!descInput.value.trim()) {
+        showError(fDesc, 'Опишите, что сказал гость / что исправить'); ok = false;
+      }
+      return ok;
+    }
+    function collect() {
+      const obj = objects.find((o) => o['id_версии'] === objectSelect.value);
+      const objName = obj ? obj['название_короткое'] : objectSelect.value;
+      return {
+        'id_менеджера': employee['id_сотрудника'],
+        'id_объекта_версии': objectSelect.value,
+        'описание': descInput.value.trim(),
+        'источник': 'гость',
+        'статус': 'новая',                 // стартовый статус (§задачи)
+        'ответственный': respSelect.value,
+        'краткое_описание': 'Задача по сервису: ' + objName + ' — ' +
+          descInput.value.trim().slice(0, 80),
+      };
+    }
+
+    const built = composeForm({
+      formType, opts, draftNote, queueKey: 'задача_сервис',
+      validate, collect,
+      fieldNodes: [fObject, fDesc, fResp],
+    });
+    setupDraft(formType, built.form, snapshot, restore, draftNote);
+
+    return Screens.formScreen({
+      employee, title: '+ Задача по сервису',
+      subtitle: 'Обратная связь гостя → задача на исправление. Попадёт в ' +
+        'список задач и уйдёт уведомлением основателю.',
+      breadcrumb: 'Сервис',
+      content: built.form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
+  // ------------------- «Задачи по сервису» (список) -----------------------
+  // Читает лист задач, показывает карточки. Статус/ответственный/комментарий
+  // правятся прямо в карточке → уходит в очередь ('задача_обновление',
+  // in-place патч смежных колонок G..K через Journal.updateOperation).
+  function openЗадачиСервис(opts) {
+    const employee = opts.employee;
+    const people = taskPeople();
+    const peopleById = {};
+    people.forEach((p) => { peopleById[p.id] = p; });
+    const objByVersion = {};
+    Cache.get('спр_объекты').forEach((o) => {
+      objByVersion[o['id_версии']] = o['название_короткое'] || o['id_версии'];
+    });
+
+    const filterSelect = selectInput();
+    fillSelect(filterSelect, [
+      { value: 'открытые', text: 'Открытые (новые + в работе)' },
+      { value: 'все', text: 'Все задачи' },
+    ], false);
+    const reloadBtn = h('button',
+      { class: 'btn-primary btn-auto', type: 'button' }, 'Обновить список');
+    const listBox = h('div', { class: 'task-list' });
+
+    function setNote(text, cls) {
+      UI.clear(listBox);
+      listBox.append(h('p', { class: cls || 'muted' }, text));
+    }
+
+    function badge(status) {
+      const map = {
+        'новая': 'task-badge-new',
+        'в работе': 'task-badge-work',
+        'выполнено': 'task-badge-done',
+      };
+      return h('span', { class: 'task-badge ' + (map[status] || '') },
+        status || 'новая');
+    }
+
+    // Карточка задачи: шапка (квартира/дата/автор), текст гостя, контролы.
+    function taskCard(data) {
+      const id = data['id_операции'];
+      const statusSelect = selectInput();
+      fillSelect(statusSelect, (CONFIG.TASK_STATUSES || []).map((s) => ({
+        value: s, text: s,
+      })), false);
+      statusSelect.value = data['статус'] || 'новая';
+
+      const respSelect = selectInput();
+      fillPeopleSelect(respSelect, people, '— не назначен —');
+      respSelect.value = data['ответственный'] || '';
+
+      const noteInput = textInput('Что сделали / детали (необязательно)');
+      noteInput.value = data['комментарий'] || '';
+
+      const saveBtn = h('button',
+        { class: 'btn-primary btn-auto', type: 'button' }, 'Сохранить');
+      const stateNote = h('span', { class: 'task-state muted' });
+
+      const head = h('div', { class: 'task-head' },
+        h('span', { class: 'task-obj' },
+          objByVersion[data['id_объекта_версии']] || data['id_объекта_версии'] || '—'),
+        badge(data['статус']),
+        h('span', { class: 'task-meta muted' },
+          id + ' · ' + String(data['дата_внесения'] || '').slice(0, 10) +
+          ' · ' + ((peopleById[data['id_менеджера']] || {}).name ||
+            data['id_менеджера'] || '')));
+
+      saveBtn.addEventListener('click', () => {
+        saveBtn.disabled = true;
+        stateNote.textContent = 'Сохраняем…';
+        Queue.add('задача_обновление', {
+          'id_операции': id,
+          'статус': statusSelect.value,
+          'ответственный': respSelect.value,
+          'комментарий': noteInput.value.trim(),
+          'id_менеджера': employee['id_сотрудника'],
+          'краткое_описание': 'Задача ' + id + ' → ' + statusSelect.value,
+        });
+        // Очередь ретраит сама; статус в карточке обновляем оптимистично.
+        data['статус'] = statusSelect.value;
+        data['ответственный'] = respSelect.value;
+        data['комментарий'] = noteInput.value.trim();
+        stateNote.textContent = '✓ в очереди на отправку';
+        saveBtn.disabled = false;
+      });
+
+      return h('div', { class: 'task-card' },
+        head,
+        h('p', { class: 'task-desc' }, data['описание'] || ''),
+        h('div', { class: 'task-controls' },
+          field('Статус', statusSelect),
+          field('Ответственный', respSelect, { aside: 'необязательно' }),
+          field('Комментарий', noteInput, { aside: 'необязательно' })),
+        h('div', { class: 'task-actions' }, stateNote, saveBtn));
+    }
+
+    async function load() {
+      setNote('Загружаем задачи…');
+      let res;
+      try {
+        res = await Journal.read(CONFIG.TASKS_SHEET);
+      } catch (err) {
+        console.error('Задачи по сервису:', err);
+        setNote('Не удалось прочитать лист задач: ' +
+          ((err && err.message) || 'ошибка сети') + '.', 'error-banner');
+        return;
+      }
+      const openOnly = filterSelect.value === 'открытые';
+      const rows = res.records
+        .map((r) => r.data)
+        .filter((d) => String(d['id_операции'] || '').trim())
+        .filter((d) => !openOnly ||
+          String(d['статус'] || 'новая').trim() !== 'выполнено')
+        // Свежие сверху: задачи копятся, старое закрытое вниз.
+        .sort((a, b) => String(b['дата_внесения'] || '')
+          .localeCompare(String(a['дата_внесения'] || '')));
+
+      UI.clear(listBox);
+      if (!rows.length) {
+        listBox.append(h('p', { class: 'muted' }, openOnly
+          ? 'Открытых задач нет — всё закрыто.'
+          : 'Задач пока нет.'));
+        return;
+      }
+      listBox.append(h('p', { class: 'muted' },
+        'Задач: ' + rows.length + (openOnly ? ' (открытых)' : ' (всего)')));
+      rows.forEach((d) => listBox.append(taskCard(d)));
+    }
+
+    filterSelect.addEventListener('change', load);
+    reloadBtn.addEventListener('click', load);
+
+    const form = h('form', { class: 'op-form' },
+      h('div', { class: 'op-search-fields' }, field('Показывать', filterSelect)),
+      h('div', { class: 'op-footer' },
+        h('span', { class: 'op-footer-hint' },
+          'Меняйте статус и ответственного прямо в карточке — «Сохранить» ' +
+          'отправит изменение (переживает обрыв сети).'),
+        h('div', { class: 'op-footer-actions' }, reloadBtn)),
+      h('div', { class: 'op-divider' }),
+      listBox);
+    form.addEventListener('submit', (e) => { e.preventDefault(); load(); });
+    load();
+
+    return Screens.formScreen({
+      employee, title: 'Задачи по сервису',
+      subtitle: 'Обратная связь гостей и что по ней сделано. Статус: ' +
+        'новая → в работе → выполнено.',
+      breadcrumb: 'Сервис',
+      content: form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
   return {
     openУборка, openМастер, openХозРасход, openПрочее, openBatch, openВыплата,
     openЗаселение, openОтчётСобственнику, openОтчётСотрудники,
     openПоискОпераций, openКорректировка,
+    openЗадачаСервис, openЗадачиСервис,
     openПомощь,
     openНовыйСобственник, openНоваяКвартира, openНовыйСотрудник, openНоваяГорничная,
     openНовыйРеквизитСобственника,
