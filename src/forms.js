@@ -3213,14 +3213,15 @@ window.Forms = (() => {
          'кассовой строкой проходит только доп.оплата (продление, ' +
          'ранний заезд), если гость платил живыми деньгами при ' +
          'заселении.']],
-      ['+ Задача по сервису',
-        ['Обратная связь гостя, по которой нужно что-то исправить: ' +
-         'выберите квартиру и запишите, что сказал гость. Ответственного ' +
-         'можно не указывать — назначите позже.',
-         'Задача сразу уходит уведомлением основателю и появляется на ' +
-         '«Доске задач» — доске из трёх колонок: новые → в работе → ' +
-         'выполнено. Карточку двигают кнопками или перетаскиванием ' +
-         'мышью. Двигать может любой сотрудник; кто двигал — записывается.']],
+      ['Доска задач (сервис)',
+        ['Обратная связь гостя, по которой нужно что-то исправить. Задача ' +
+         'заводится прямо на доске, в колонке «Новые»: выберите квартиру, ' +
+         'напишите, что сказал гость, при желании назначьте ответственного.',
+         'Этапы: новая → в работе → требует подтверждения → выполнено. ' +
+         'Карточку двигают кнопками или перетаскиванием мышью. Подрядчик ' +
+         '(мастер, горничная) видит только свои задачи и доводит их до ' +
+         '«требует подтверждения» — закрывает задачу основатель или ' +
+         'менеджер. Каждая новая задача уходит уведомлением в Телеграм.']],
       ['+ Уборка',
         ['Запись об уборке: дата, горничная, объект, тип (плановая ' +
          'или генеральная). Сумма подставится автоматически из ставки ' +
@@ -4259,101 +4260,28 @@ window.Forms = (() => {
     });
   }
 
-  // ---------------------- «+ Задача по сервису» ---------------------------
-  function openЗадачаСервис(opts) {
-    const employee = opts.employee;
-    const formType = 'задача_сервис';
-
-    const objects = Cache.forDropdown('спр_объекты');
-    const objectSelect = selectInput();
-    fillSelect(objectSelect, objects.map((o) => ({
-      value: o['id_версии'], text: o['название_короткое'],
-    })));
-    const descInput = textarea(
-      'Что сказал гость: что не так, что нужно исправить');
-    const people = taskPeople();
-    const respSelect = selectInput();
-    fillPeopleSelect(respSelect, people, '— пока не назначен —');
-
-    const fObject = field('Квартира', objectSelect);
-    const fDesc = field('Обратная связь гостя / что исправить', descInput);
-    const fResp = field('Ответственный', respSelect, { aside: 'необязательно' });
-
-    const draftNote = h('div', { class: 'draft-note', style: 'display:none' });
-
-    function snapshot() {
-      return {
-        объект: objectSelect.value, описание: descInput.value,
-        ответственный: respSelect.value,
-      };
-    }
-    function restore(d) {
-      objectSelect.value = d.объект || '';
-      descInput.value = d.описание || '';
-      respSelect.value = d.ответственный || '';
-    }
-    function validate() {
-      [fObject, fDesc].forEach(clearError);
-      let ok = true;
-      if (!objectSelect.value) { showError(fObject, 'Выберите квартиру'); ok = false; }
-      if (!descInput.value.trim()) {
-        showError(fDesc, 'Опишите, что сказал гость / что исправить'); ok = false;
-      }
-      return ok;
-    }
-    function collect() {
-      const obj = objects.find((o) => o['id_версии'] === objectSelect.value);
-      const objName = obj ? obj['название_короткое'] : objectSelect.value;
-      return {
-        'id_менеджера': employee['id_сотрудника'],
-        'id_объекта_версии': objectSelect.value,
-        'описание': descInput.value.trim(),
-        'источник': 'гость',
-        'статус': 'новая',                 // стартовый статус (§задачи)
-        'ответственный': respSelect.value,
-        'краткое_описание': 'Задача по сервису: ' + objName + ' — ' +
-          descInput.value.trim().slice(0, 80),
-      };
-    }
-
-    const built = composeForm({
-      formType, opts, draftNote, queueKey: 'задача_сервис',
-      validate, collect,
-      fieldNodes: [fObject, fDesc, fResp],
-    });
-    setupDraft(formType, built.form, snapshot, restore, draftNote);
-
-    return Screens.formScreen({
-      employee, title: '+ Задача по сервису',
-      subtitle: 'Обратная связь гостя → задача на исправление. Попадёт в ' +
-        'список задач и уйдёт уведомлением основателю.',
-      breadcrumb: 'Сервис',
-      content: built.form,
-      onBack: () => opts.onExit(),
-      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
-      onOpenHelp: opts.onOpenHelp,
-    });
-  }
-
-  // ------------------- «Задачи по сервису» (канбан) -----------------------
-  // Доска из трёх колонок по статусу: новая → в работе → выполнено.
-  // Карточку двигают кнопками (работают и на телефоне) либо перетаскиванием
-  // мышью (desktop, HTML5 drag&drop — прогрессивное улучшение; на мобильных
-  // DnD не работает, поэтому кнопки — основной путь, а не запасной).
-  // Любое движение уходит в очередь ('задача_обновление' → in-place патч
-  // смежных колонок G..K), переживает обрыв сети.
+  // ---------------- «Задачи по сервису» — единый экран-доска ---------------
+  // Отдельной формы создания НЕТ (решение фаундера 14.07: незачем плодить
+  // экраны) — задача заводится прямо на доске, карточка появляется сразу.
+  //
+  // Колонки: новая → в работе → требует подтверждения → выполнено.
+  // «Требует подтверждения» — буфер приёмки: подрядчик доводит задачу только
+  // до него; закрыть в «выполнено» может фаундер или менеджер.
   function openЗадачиСервис(opts) {
     const employee = opts.employee;
-    // Подрядчик (мастер/горничная) видит ТОЛЬКО свои задачи и не может
-    // переназначить ответственного — иначе перекинул бы задачу с себя.
-    // Роль синтезируется в Cache.activeEmployees по флагу справочника.
+    // Подрядчик (мастер/горничная): видит только СВОИ задачи, не назначает
+    // ответственного, не заводит задачи и не закрывает их в «выполнено».
     const role = String(employee['роль'] || '').trim().toLowerCase();
     const restricted = role === 'мастер' || role === 'горничная' ||
       role === 'подрядчик';
     const myId = employee['id_сотрудника'];
+    const FINAL = CONFIG.TASK_FINAL_STATUS;
+    const STATUSES = CONFIG.TASK_STATUSES;
+
     const people = taskPeople();
     const peopleById = {};
     people.forEach((p) => { peopleById[p.id] = p; });
+    const objects = Cache.forDropdown('спр_объекты');
     const objByVersion = {};
     Cache.get('спр_объекты').forEach((o) => {
       objByVersion[o['id_версии']] = o['название_короткое'] || o['id_версии'];
@@ -4362,24 +4290,27 @@ window.Forms = (() => {
     const COLUMNS = [
       { status: 'новая', title: 'Новые', cls: 'kb-col-new' },
       { status: 'в работе', title: 'В работе', cls: 'kb-col-work' },
-      { status: 'выполнено', title: 'Выполнено', cls: 'kb-col-done' },
+      { status: 'требует подтверждения', title: 'Требует подтверждения',
+        cls: 'kb-col-check' },
+      { status: FINAL, title: 'Выполнено', cls: 'kb-col-done' },
     ];
-    // Колонка «выполнено» растёт бесконечно — показываем свежие, остальное
-    // за ссылкой (доска не должна превращаться в архив).
-    const DONE_LIMIT = 12;
+    const DONE_LIMIT = 12;   // «выполнено» растёт бесконечно — показываем свежие
 
-    let tasks = [];              // все задачи листа (локальное состояние доски)
+    let tasks = [];
     let showAllDone = false;
     const boardBox = h('div', { class: 'kb-board' });
     const reloadBtn = h('button',
       { class: 'btn-primary btn-auto', type: 'button' }, 'Обновить доску');
 
+    // Может ли этот пользователь перевести задачу в статус `to`.
+    // Подрядчику закрыт только финальный статус — до «требует подтверждения»
+    // он задачу доводит сам.
+    const canMoveTo = (to) => !restricted || to !== FINAL;
+
     function setNote(text, cls) {
       UI.clear(boardBox);
       boardBox.append(h('p', { class: cls || 'muted' }, text));
     }
-
-    // ISO-timestamp → дд.мм.гггг. Пустое/битое — прочерк, не «Invalid Date».
     function shortDate(v) {
       const s = String(v || '').slice(0, 10);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return '—';
@@ -4388,7 +4319,6 @@ window.Forms = (() => {
     }
     const statusOf = (d) => String(d['статус'] || 'новая').trim();
 
-    // Отправить изменение задачи (статус / ответственный / комментарий).
     function pushUpdate(data, patch) {
       Object.assign(data, patch);
       Queue.add('задача_обновление', {
@@ -4396,29 +4326,74 @@ window.Forms = (() => {
         'статус': statusOf(data),
         'ответственный': data['ответственный'] || '',
         'комментарий': data['комментарий'] || '',
-        'id_менеджера': employee['id_сотрудника'],
+        'id_менеджера': myId,
         'краткое_описание': 'Задача ' + data['id_операции'] + ' → ' + statusOf(data),
       });
-      // Дату закрытия рисуем сразу — сервер проставит ту же (очередь ретраит).
       data['дата_обновления'] = new Date().toISOString();
       render();
     }
 
-    function moveBtn(label, data, toStatus) {
-      const btn = h('button', { class: 'kb-move-btn', type: 'button' }, label);
-      btn.addEventListener('click', () => pushUpdate(data, { 'статус': toStatus }));
-      return btn;
+    // ---------------- форма добавления прямо на доске -------------------
+    // Живёт в колонке «Новые». Карточка появляется сразу (оптимистично,
+    // помечена «отправляется…»), реальный TSK-id проставится, когда очередь
+    // допишет строку — на onCommitted перечитываем доску.
+    function addForm() {
+      const objSelect = selectInput();
+      fillSelect(objSelect, objects.map((o) => ({
+        value: o['id_версии'], text: o['название_короткое'],
+      })));
+      const descInput = textarea('Что сказал гость / что исправить');
+      descInput.rows = 2;
+      const respSelect = selectInput();
+      fillPeopleSelect(respSelect, people, '— ответственный не назначен —');
+      const addBtn = h('button',
+        { class: 'kb-move-btn kb-save', type: 'button' }, '+ Добавить задачу');
+      const err = h('div', { class: 'field-error', style: 'display:none' });
+
+      addBtn.addEventListener('click', () => {
+        const desc = descInput.value.trim();
+        if (!objSelect.value || !desc) {
+          err.textContent = !objSelect.value
+            ? 'Выберите квартиру' : 'Опишите, что исправить';
+          err.style.display = '';
+          return;
+        }
+        err.style.display = 'none';
+        Queue.add('задача_сервис', {
+          'id_менеджера': myId,
+          'id_объекта_версии': objSelect.value,
+          'описание': desc,
+          'источник': 'гость',
+          'статус': 'новая',
+          'ответственный': respSelect.value,
+          'краткое_описание': 'Задача по сервису: ' +
+            (objByVersion[objSelect.value] || objSelect.value) + ' — ' +
+            desc.slice(0, 80),
+        });
+        // Оптимистичная карточка: id ещё нет (его выдаст sender).
+        tasks.push({
+          'id_операции': '', 'дата_внесения': new Date().toISOString(),
+          'id_менеджера': myId, 'id_объекта_версии': objSelect.value,
+          'описание': desc, 'статус': 'новая',
+          'ответственный': respSelect.value, 'комментарий': '',
+          _pending: true,
+        });
+        objSelect.value = ''; descInput.value = ''; respSelect.value = '';
+        render();
+      });
+
+      return h('div', { class: 'kb-add' },
+        objSelect, descInput, respSelect, err, addBtn);
     }
 
     function taskCard(data) {
       const id = data['id_операции'];
       const status = statusOf(data);
+      const pending = !!data._pending;
       const respName = data['ответственный']
         ? ((peopleById[data['ответственный']] || {}).name || data['ответственный'])
         : 'не назначен';
 
-      // Детали (ответственный + комментарий) — под катом: в узкой колонке
-      // канбана постоянные селекты съедают всю карточку.
       const respSelect = selectInput();
       fillPeopleSelect(respSelect, people, '— не назначен —');
       respSelect.value = data['ответственный'] || '';
@@ -4430,8 +4405,6 @@ window.Forms = (() => {
       if (!restricted) details.append(field('Ответственный', respSelect));
       details.append(field('Комментарий', noteInput), saveBtn);
       saveBtn.addEventListener('click', () => pushUpdate(data, restricted
-        // Подрядчик ответственного не трогает — шлём текущее значение,
-        // иначе патч затёр бы его пустотой.
         ? { 'комментарий': noteInput.value.trim() }
         : { 'ответственный': respSelect.value,
           'комментарий': noteInput.value.trim() }));
@@ -4445,18 +4418,26 @@ window.Forms = (() => {
         card.classList.toggle('kb-card-open', !open);
       });
 
-      // Кнопки движения — по текущей колонке (соседние статусы).
+      // Кнопки движения — соседние статусы, с учётом прав.
       const moves = h('div', { class: 'kb-moves' });
-      if (status === 'новая') {
-        moves.append(moveBtn('В работу →', data, 'в работе'));
-      } else if (status === 'в работе') {
-        moves.append(moveBtn('← Новая', data, 'новая'),
-          moveBtn('Выполнено →', data, 'выполнено'));
-      } else {
-        moves.append(moveBtn('← Вернуть в работу', data, 'в работе'));
+      const idx = STATUSES.indexOf(status);
+      const mkBtn = (label, to) => {
+        const btn = h('button', { class: 'kb-move-btn', type: 'button' }, label);
+        btn.addEventListener('click', () => pushUpdate(data, { 'статус': to }));
+        return btn;
+      };
+      if (!pending && idx > 0) {
+        moves.append(mkBtn('← ' + STATUSES[idx - 1], STATUSES[idx - 1]));
+      }
+      if (!pending && idx >= 0 && idx < STATUSES.length - 1 &&
+          canMoveTo(STATUSES[idx + 1])) {
+        moves.append(mkBtn(STATUSES[idx + 1] + ' →', STATUSES[idx + 1]));
       }
 
-      const card = h('div', { class: 'kb-card', draggable: 'true' },
+      const card = h('div', {
+        class: 'kb-card' + (pending ? ' kb-card-pending' : ''),
+        draggable: pending ? 'false' : 'true',
+      },
         h('div', { class: 'kb-card-top' },
           h('span', { class: 'task-date' }, shortDate(data['дата_внесения'])),
           h('span', { class: 'kb-obj' },
@@ -4464,17 +4445,18 @@ window.Forms = (() => {
             data['id_объекта_версии'] || '—')),
         h('p', { class: 'kb-desc' }, data['описание'] || ''),
         toggle, details, moves,
-        h('div', { class: 'kb-foot muted' }, id +
-          (status === 'выполнено' && data['дата_обновления']
-            ? ' · закрыто ' + shortDate(data['дата_обновления']) : '')));
+        h('div', { class: 'kb-foot muted' }, pending ? 'отправляется…' :
+          (id + (status === FINAL && data['дата_обновления']
+            ? ' · закрыто ' + shortDate(data['дата_обновления']) : ''))));
 
-      // Drag&drop (desktop). id задачи — единственное, что кладём в dataTransfer.
-      card.addEventListener('dragstart', (e) => {
-        e.dataTransfer.setData('text/plain', id);
-        e.dataTransfer.effectAllowed = 'move';
-        card.classList.add('kb-dragging');
-      });
-      card.addEventListener('dragend', () => card.classList.remove('kb-dragging'));
+      if (!pending) {
+        card.addEventListener('dragstart', (e) => {
+          e.dataTransfer.setData('text/plain', id);
+          e.dataTransfer.effectAllowed = 'move';
+          card.classList.add('kb-dragging');
+        });
+        card.addEventListener('dragend', () => card.classList.remove('kb-dragging'));
+      }
       return card;
     }
 
@@ -4482,17 +4464,20 @@ window.Forms = (() => {
       UI.clear(boardBox);
       COLUMNS.forEach((col) => {
         let list = tasks.filter((d) => statusOf(d) === col.status)
-          // Свежие сверху.
           .sort((a, b) => String(b['дата_внесения'] || '')
             .localeCompare(String(a['дата_внесения'] || '')));
         const total = list.length;
         let hidden = 0;
-        if (col.status === 'выполнено' && !showAllDone && total > DONE_LIMIT) {
+        if (col.status === FINAL && !showAllDone && total > DONE_LIMIT) {
           hidden = total - DONE_LIMIT;
           list = list.slice(0, DONE_LIMIT);
         }
 
         const body = h('div', { class: 'kb-col-body' });
+        // Заводить задачи может только штатный сотрудник — подрядчику
+        // форма не нужна: он бы создал задачу, которую сам не увидит
+        // (доска фильтрует по «ответственный = он»).
+        if (col.status === 'новая' && !restricted) body.append(addForm());
         if (!total) {
           body.append(h('p', { class: 'kb-empty muted' }, 'пусто'));
         } else {
@@ -4511,22 +4496,27 @@ window.Forms = (() => {
             h('span', { class: 'kb-col-count' }, String(total))),
           body);
 
-        // Приём перетаскиваемой карточки: колонка = целевой статус.
-        column.addEventListener('dragover', (e) => {
-          e.preventDefault();                     // без этого drop не сработает
-          e.dataTransfer.dropEffect = 'move';
-          column.classList.add('kb-col-over');
-        });
-        column.addEventListener('dragleave', () =>
-          column.classList.remove('kb-col-over'));
-        column.addEventListener('drop', (e) => {
-          e.preventDefault();
-          column.classList.remove('kb-col-over');
-          const id = e.dataTransfer.getData('text/plain');
-          const data = tasks.find((t) => t['id_операции'] === id);
-          if (!data || statusOf(data) === col.status) return;
-          pushUpdate(data, { 'статус': col.status });
-        });
+        // Drop: колонка = целевой статус. Недоступную подрядчику колонку
+        // («выполнено») не подсвечиваем и не принимаем.
+        if (canMoveTo(col.status)) {
+          column.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            column.classList.add('kb-col-over');
+          });
+          column.addEventListener('dragleave', () =>
+            column.classList.remove('kb-col-over'));
+          column.addEventListener('drop', (e) => {
+            e.preventDefault();
+            column.classList.remove('kb-col-over');
+            const id = e.dataTransfer.getData('text/plain');
+            const data = tasks.find((t) => t['id_операции'] === id);
+            if (!data || statusOf(data) === col.status) return;
+            pushUpdate(data, { 'статус': col.status });
+          });
+        } else {
+          column.classList.add('kb-col-locked');
+        }
         boardBox.append(column);
       });
     }
@@ -4544,20 +4534,26 @@ window.Forms = (() => {
       }
       tasks = res.records.map((r) => r.data)
         .filter((d) => String(d['id_операции'] || '').trim())
-        // Подрядчик — только задачи, где ОН ответственный. Его id в
-        // `ответственный` — тот же bare-id, под которым он вошёл (MST-001).
         .filter((d) => !restricted ||
           String(d['ответственный'] || '').trim() === myId);
       render();
     }
 
     reloadBtn.addEventListener('click', load);
+    // Как только очередь дописала задачу в лист — перечитываем доску, чтобы
+    // оптимистичная карточка сменилась настоящей (с TSK-id).
+    Queue.onCommitted((item) => {
+      if (item && item.formType === 'задача_сервис' &&
+          document.body.contains(boardBox)) load();
+    });
 
     const form = h('form', { class: 'op-form' },
       h('div', { class: 'op-footer' },
-        h('span', { class: 'op-footer-hint' },
-          'Двигайте карточки кнопками или мышью между колонками. ' +
-          'Изменения уходят сразу и переживают обрыв сети.'),
+        h('span', { class: 'op-footer-hint' }, restricted
+          ? 'Двигайте свои задачи по мере работы. Закрывает задачу ' +
+            'основатель — доводите до «требует подтверждения».'
+          : 'Задача заводится прямо в колонке «Новые». Двигайте карточки ' +
+            'кнопками или мышью — изменения переживают обрыв сети.'),
         h('div', { class: 'op-footer-actions' }, reloadBtn)),
       h('div', { class: 'op-divider' }),
       boardBox);
@@ -4567,9 +4563,10 @@ window.Forms = (() => {
     return Screens.formScreen({
       employee, title: restricted ? 'Мои задачи' : 'Задачи по сервису',
       subtitle: restricted
-        ? 'Ваши задачи. Двигайте карточку по мере работы: ' +
-          'новая → в работе → выполнено.'
-        : 'Обратная связь гостей на доске: новая → в работе → выполнено.',
+        ? 'Ваши задачи: новая → в работе → требует подтверждения. ' +
+          'В «выполнено» закрывает основатель.'
+        : 'Обратная связь гостей: новая → в работе → требует подтверждения ' +
+          '→ выполнено.',
       breadcrumb: 'Сервис',
       content: form,
       onBack: () => opts.onExit(),
@@ -4582,7 +4579,7 @@ window.Forms = (() => {
     openУборка, openМастер, openХозРасход, openПрочее, openBatch, openВыплата,
     openЗаселение, openОтчётСобственнику, openОтчётСотрудники,
     openПоискОпераций, openКорректировка,
-    openЗадачаСервис, openЗадачиСервис,
+    openЗадачиСервис,
     openПомощь,
     openНовыйСобственник, openНоваяКвартира, openНовыйСотрудник, openНоваяГорничная,
     openНовыйРеквизитСобственника,

@@ -69,7 +69,7 @@ body {
   height: 28px;
   /* Фирменный знак Ренто (lime-кружок с «P»). SVG самодостаточен — свои
      градиенты/цвета; раньше тут был плейсхолдер-кружок (lime + radius). */
-  background: url("assets/rento-mark.svg?v=50") center / contain no-repeat;
+  background: url("assets/rento-mark.svg?v=51") center / contain no-repeat;
 }
 .logo-text { font-size: 24px; font-weight: 900; letter-spacing: -0.8px; }
 
@@ -925,8 +925,8 @@ body {
 /* --- задачи по сервису: канбан-доска (14.07.2026) --------------------- */
 .kb-board {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
+  grid-template-columns: repeat(4, 1fr);   /* новая · в работе · требует · выполнено */
+  gap: 14px;
   align-items: start;
 }
 .kb-col {
@@ -957,10 +957,16 @@ body {
 }
 .kb-col-new .kb-col-count { background: var(--lime-500); color: #0a0a0a; }
 .kb-col-work .kb-col-count { background: var(--warning); color: #fff; }
-.kb-col-done .kb-col-count { background: var(--border); color: var(--text-2); }
+.kb-col-check .kb-col-count { background: var(--ink); color: var(--surface-0); }
+.kb-col-done .kb-col-count { background: var(--success); color: #fff; }
 /* Цветной кант колонки — статус читается боковым зрением. */
 .kb-col-new .kb-col-head { border-bottom-color: var(--lime-500); }
 .kb-col-work .kb-col-head { border-bottom-color: var(--warning); }
+.kb-col-check .kb-col-head { border-bottom-color: var(--ink); }
+.kb-col-done .kb-col-head { border-bottom-color: var(--success); }
+/* Колонка, недоступная этой роли (подрядчику — «выполнено»): не принимает
+   карточку и показывает это приглушённостью. */
+.kb-col-locked { opacity: 0.6; }
 
 .kb-col-body { display: flex; flex-direction: column; gap: 10px; }
 .kb-empty { font-size: 13px; font-style: italic; padding: 8px 2px; }
@@ -1027,7 +1033,27 @@ body {
 
 /* На узком экране доска складывается в колонку: менеджер листает статусы
    сверху вниз, карточки двигает кнопками (DnD на мобильных не работает). */
-@media (max-width: 900px) {
+/* Четыре колонки требуют ширины. Сужаемся ступенями, на телефоне —
+   одна колонка: подрядчик листает свои задачи сверху вниз, двигает
+   кнопками (DnD на мобильных не работает). */
+@media (max-width: 1200px) {
+  .kb-board { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 700px) {
   .kb-board { grid-template-columns: 1fr; }
   .kb-card { cursor: default; }
 }
+
+/* Заведение задачи прямо в колонке «Новые» (отдельного экрана формы нет). */
+.kb-add {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px;
+  background: var(--surface-0);
+  border: 1.5px dashed var(--border);
+  border-radius: 14px;
+}
+.kb-add .field-input { padding: 8px 10px; font-size: 13px; }
+.kb-add textarea.field-input { min-height: 56px; }
+
+/* Карточка, которую очередь ещё не дописала в лист. */
+.kb-card-pending { opacity: 0.65; border-style: dashed; cursor: default; }
