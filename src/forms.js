@@ -4650,6 +4650,17 @@ window.Forms = (() => {
     }));
     const personName = {};
     people.forEach((p) => { personName[p.id] = p.name; });
+    // Резолв имён для истории: мигрированные задачи ссылаются на родные
+    // id боевых справочников (MST-001 Денис и т.п.) — в выпадашку
+    // назначения они не попадают, но в карточках и архиве читаются.
+    [['спр_мастера', 'id_мастера'], ['спр_горничные', 'id_горничной']]
+      .forEach(([sheet, idField]) => {
+        Cache.get(sheet).forEach((r) => {
+          if (!(r[idField] in personName)) {
+            personName[r[idField]] = r['фио'] || r[idField];
+          }
+        });
+      });
     function fillPeople(select, placeholder) {
       select.innerHTML = '';
       select.append(h('option', { value: '' }, placeholder));
@@ -5073,10 +5084,13 @@ window.Forms = (() => {
             .localeCompare(String(a['дата_внесения'] || '')));
         // Архив (ADR-034): в канбане — только подтверждённые текущего
         // месяца; прошлые месяцы уходят в архивный вид сами 1-го числа.
+        // Подтверждения до SERVICE_BOARD_SINCE (мигрированные из боевого
+        // листа) — сразу в архиве, каким бы ни был месяц (ADR-034 п.4).
         let archivedCount = 0;
         if (col.status === 'подтверждено') {
           const current = list.filter((d) =>
-            monthKey(confirmedAt(d)) === thisMonth);
+            monthKey(confirmedAt(d)) === thisMonth &&
+            String(confirmedAt(d)) >= CONFIG.SERVICE_BOARD_SINCE);
           archivedCount = list.length - current.length;
           list = current;
         }
