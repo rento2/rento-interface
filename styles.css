@@ -1077,5 +1077,9 @@ body {
 .kb-add .field-input { padding: 8px 10px; font-size: 13px; }
 .kb-add textarea.field-input { min-height: 56px; }
 
+/* Фильтры доски сервиса (С1.2): исполнитель + тип, в строку над доской. */
+.kb-filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.kb-filters .field-input { max-width: 260px; padding: 8px 10px; font-size: 13px; }
+
 /* Карточка, которую очередь ещё не дописала в лист. */
 .kb-card-pending { opacity: 0.65; border-style: dashed; cursor: default; }

@@ -251,6 +251,11 @@
     // (решение фаундера 14.07). Sender 'задача_сервис' при этом жив: доска
     // кладёт им новую задачу в очередь.
     'задачи_сервис': Forms.openЗадачиСервис,
+    // Доска сервисного блока (ADR-031, С1.2): журнал_задачи файла
+    // сервиса, статусы §5, цены §6. Заменяет старую доску после
+    // миграции TSK (TICKET-С1.0); старая остаётся достижимой на
+    // переходный период.
+    'доска_сервис': Forms.openДоскаСервис,
   };
 
   // Формы только для основателя, которых нет в реестре операций
@@ -264,7 +269,8 @@
   const FOUNDER_ONLY_FORMS = new Set();
 
   // Что открыто ограниченной роли (подрядчик). Всё остальное — showMain.
-  const RESTRICTED_ALLOWED_FORMS = new Set(['задачи_сервис', 'помощь']);
+  const RESTRICTED_ALLOWED_FORMS = new Set(
+    ['задачи_сервис', 'доска_сервис', 'помощь']);
 
   // Полноэкранный экран формы операции (ADR-006). Отмена, «← На главную»
   // и успешная отправка возвращают на главный экран через showMain.
@@ -743,6 +749,53 @@
         'id_операции': formData['id_операции'],
         'тип_операции': 'задача_сервис',
         'краткое_описание': formData['краткое_описание'] || '',
+      });
+      return {};
+    });
+
+    // --- Доска сервисного блока (ADR-031, TICKET-С1.2) -----------------
+    // Создание задачи в журнал_задачи ФАЙЛА СЕРВИСА. id — продолжение
+    // сквозной нумерации TSK-* (ADR-027); идемпотентность по client_uuid.
+    // Лог — в _лог_действий_сервис с timestamp, зафиксированным формой
+    // при постановке в очередь (ретрай не дублирует строку лога).
+    Queue.registerSender('сервис_задача', async (formData, clientUuid) => {
+      const sheet = CONFIG.SERVICE_TASKS_SHEET;
+      const { headers, records } = await Journal.serviceRead(sheet);
+      const dup = records.find((r) => r.data['client_uuid'] === clientUuid);
+      let id;
+      if (dup) {
+        id = dup.data['id_задачи'];
+      } else {
+        id = Forms.nextRefId(records.map((r) => r.data), 'TSK', 'id_задачи');
+        await Journal.serviceAppend(sheet,
+          { ...formData.row, 'id_задачи': id, 'client_uuid': clientUuid },
+          headers);
+      }
+      // Лог — и на ретрае после records-дубля: упасть могли между
+      // append и логом. serviceLog идемпотентен по (timestamp, id_записи).
+      await Journal.serviceLog({
+        'timestamp': formData.logTimestamp,
+        'кто': formData.actorId,
+        'действие': 'создание',
+        'id_записи': id,
+        'краткое_описание': formData.shortDesc,
+      });
+      return { id };
+    });
+
+    // Обновление задачи файла сервиса: смена статуса (со статусными
+    // timestamp'ами), возврат с причиной, правка исполнителя/цены/
+    // комментария, отмена. Патч на месте — осознанное исключение из
+    // append-only (ADR-033); каждая правка — строка в лог.
+    Queue.registerSender('сервис_задача_обновление', async (formData) => {
+      await Journal.serviceUpdate(CONFIG.SERVICE_TASKS_SHEET, 'id_задачи',
+        formData.taskId, formData.patch);
+      await Journal.serviceLog({
+        'timestamp': formData.logTimestamp,
+        'кто': formData.actorId,
+        'действие': formData.logAction,
+        'id_записи': formData.taskId,
+        'краткое_описание': formData.shortDesc,
       });
       return {};
     });

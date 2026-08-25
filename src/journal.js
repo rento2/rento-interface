@@ -335,6 +335,63 @@ window.Journal = (() => {
     await Sheets.appendRow(CONFIG.LOG_SHEET, buildRow(headers, actionData));
   }
 
+  // ================= Файл сервиса (ADR-031, TICKET-С1.2) =================
+  // Отдельные функции, не переиспользующие боевые пути: у файла сервиса
+  // другой ID, другой ключ строки (id_задачи) и осознанное исключение из
+  // append-only — задачи правятся на месте (ADR-033), история в
+  // _лог_действий_сервис.
+
+  // Прочитать лист файла сервиса: { headers, records }.
+  async function serviceRead(sheetName) {
+    return parseValues(
+      await Sheets.getValues(sheetName, CONFIG.SERVICE_SPREADSHEET_ID));
+  }
+
+  // Дописать строку в лист файла сервиса (по именам колонок).
+  async function serviceAppend(sheetName, dataObject, headers) {
+    await Sheets.appendRow(sheetName, buildRow(headers, dataObject),
+      CONFIG.SERVICE_SPREADSHEET_ID);
+  }
+
+  // Патч строки файла сервиса по ключевой колонке (id_задачи и т.п.).
+  // Механика та же, что updateOperation: узкий непрерывный диапазон,
+  // чтобы не затирать соседние колонки.
+  async function serviceUpdate(sheetName, idField, idValue, patch) {
+    const { headers, records } = await serviceRead(sheetName);
+    const rec = records.find((r) => r.data[idField] === idValue);
+    if (!rec) {
+      throw new Error('Запись ' + idValue + ' не найдена в ' + sheetName);
+    }
+    const cols = Object.keys(patch)
+      .map((k) => headers.indexOf(k))
+      .filter((i) => i >= 0);
+    if (!cols.length) return;
+    const min = Math.min(...cols);
+    const max = Math.max(...cols);
+    const merged = { ...rec.data, ...patch };
+    const spanValues = [];
+    for (let c = min; c <= max; c += 1) {
+      const v = merged[headers[c]];
+      spanValues.push(v !== undefined && v !== null ? v : '');
+    }
+    const range = sheetName + '!' + colLetter(min) + rec.rowNumber + ':' +
+      colLetter(max) + rec.rowNumber;
+    await Sheets.updateRange(range, spanValues, CONFIG.SERVICE_SPREADSHEET_ID);
+  }
+
+  // Строка в _лог_действий_сервис (§4.6). Лог пишет КАЖДУЮ смену
+  // статуса одной задачи, поэтому дедуп по (id_записи, действие) не
+  // годится — опорный ключ (timestamp, id_записи): timestamp фиксируется
+  // формой в момент постановки в очередь и на ретрае не меняется.
+  async function serviceLog(entry) {
+    const { headers, records } = await serviceRead(CONFIG.SERVICE_LOG_SHEET);
+    const dup = records.some((r) =>
+      r.data['timestamp'] === entry['timestamp'] &&
+      r.data['id_записи'] === entry['id_записи']);
+    if (dup) return;
+    await serviceAppend(CONFIG.SERVICE_LOG_SHEET, entry, headers);
+  }
+
   return {
     read,
     readMany,
@@ -346,5 +403,9 @@ window.Journal = (() => {
     updateOperation,
     appendUnique,
     logAction,
+    serviceRead,
+    serviceAppend,
+    serviceUpdate,
+    serviceLog,
   };
 })();

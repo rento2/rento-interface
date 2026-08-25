@@ -44,9 +44,10 @@ window.Sheets = (() => {
   }
 
   // Прочитать значения одного диапазона (имя листа = весь лист).
-  async function getValues(range) {
+  // spreadsheetId — опционально (файл сервиса, ADR-031).
+  async function getValues(range, spreadsheetId) {
     const response = await gapi.client.sheets.spreadsheets.values.get({
-      spreadsheetId: CONFIG.SHEETS_ID,
+      spreadsheetId: spreadsheetId || CONFIG.SHEETS_ID,
       range,
     });
     return response.result.values || [];
@@ -54,9 +55,9 @@ window.Sheets = (() => {
 
   // Дописать строку в конец листа (append-only журналы, §1.2).
   // USER_ENTERED — числа и даты парсятся как в ручном вводе.
-  async function appendRow(sheetName, rowValues) {
+  async function appendRow(sheetName, rowValues, spreadsheetId) {
     await gapi.client.sheets.spreadsheets.values.append({
-      spreadsheetId: CONFIG.SHEETS_ID,
+      spreadsheetId: spreadsheetId || CONFIG.SHEETS_ID,
       range: sheetName,
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
@@ -66,9 +67,9 @@ window.Sheets = (() => {
 
   // Перезаписать конкретный диапазон A1 (для отката — смена статуса
   // в существующей строке журнала, §15).
-  async function updateRange(rangeA1, rowValues) {
+  async function updateRange(rangeA1, rowValues, spreadsheetId) {
     await gapi.client.sheets.spreadsheets.values.update({
-      spreadsheetId: CONFIG.SHEETS_ID,
+      spreadsheetId: spreadsheetId || CONFIG.SHEETS_ID,
       range: rangeA1,
       valueInputOption: 'USER_ENTERED',
       resource: { values: [rowValues] },

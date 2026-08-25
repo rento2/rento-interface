@@ -4601,11 +4601,499 @@ window.Forms = (() => {
     });
   }
 
+  // ------------- Доска сервисного блока (ADR-031, TICKET-С1.2) -------------
+  // Эволюция «Задач по сервису» под файл сервиса: журнал_задачи, статусы §5
+  // (новая → в_работе → выполнено → подтверждено, + скрытая «отменена»),
+  // типы и цены задач §6, права по ролям §3, лог — _лог_действий_сервис.
+  // Механика доски сохранена (решение фаундера 25.08: «сейчас удобно»):
+  // задача заводится в колонке «Новые», карточки двигаются кнопками.
+  //
+  // «Подтвердить» в С1.2 — только смена статуса; транзакция начисления
+  // в боевой файл придёт в TICKET-С1.3 и заменит этот переход.
+  function openДоскаСервис(opts) {
+    const employee = opts.employee;
+    const role = String(employee['роль'] || '').trim().toLowerCase();
+    const myId = employee['id_сотрудника'];
+    // Исполнитель — вошёл по спр_исполнители (EXE-*): только свои задачи.
+    // Менеджер/основатель — все задачи и все переходы.
+    const executor = !!employee['_исполнитель'];
+    const isManager = !executor;
+    const canOverridePrice = isManager ||
+      role === 'техник' || role === 'супервайзер';   // горничная — нет (§6)
+
+    const STATUSES = CONFIG.SERVICE_TASK_STATUSES;
+    const CANCELLED = CONFIG.SERVICE_TASK_CANCELLED;
+    const TYPES = CONFIG.SERVICE_TASK_TYPES;
+    const TYPE_ICONS = { 'уборка': '🧹', 'сервис': '🛠', 'ремонт': '🔧', 'закупка': '🛒' };
+
+    // Квартиры — из файла сервиса (стабильные id; у менеджера и
+    // исполнителя одинаково). Название по id — для карточек.
+    const flats = Cache.getService('спр_квартиры');
+    const activeFlats = flats.filter((f) =>
+      String(f['статус'] || '').trim() === 'активен');
+    const flatName = {};
+    flats.forEach((f) => { flatName[f['id_объекта']] = f['название_короткое'] || f['id_объекта']; });
+
+    // Люди: исполнители файла сервиса + сотрудники боевого (закупки и
+    // прочие задачи назначаются и на сотрудников — как на старой доске;
+    // требует синхронизации с SERVICE_SPEC §4.4). У исполнителя боевого
+    // кеша нет — там будет только список исполнителей, этого хватает.
+    const people = [];
+    Cache.serviceExecutors().forEach((r) => people.push({
+      id: r['id_исполнителя'],
+      name: (r['фио'] || r['id_исполнителя']) + ' — ' + (r['роль'] || ''),
+      group: 'исполнитель',
+    }));
+    Cache.forDropdown('спр_сотрудники').forEach((r) => people.push({
+      id: r['id_сотрудника'], name: r['фио'] || r['id_сотрудника'],
+      group: 'сотрудник',
+    }));
+    const personName = {};
+    people.forEach((p) => { personName[p.id] = p.name; });
+    function fillPeople(select, placeholder) {
+      select.innerHTML = '';
+      select.append(h('option', { value: '' }, placeholder));
+      [['Исполнители', 'исполнитель'], ['Сотрудники', 'сотрудник']]
+        .forEach(([label, grp]) => {
+          const og = h('optgroup', { label });
+          people.filter((p) => p.group === grp).forEach((p) =>
+            og.append(h('option', { value: p.id }, p.name)));
+          if (og.children.length) select.append(og);
+        });
+    }
+
+    // Дефолт цены (§6): уборка — спр_ставки_уборок по объекту и типу на
+    // сегодня; ремонт — ставка_дефолт_₽ мастера-исполнителя (обычно
+    // пустая — договорная); сервис — вручную; закупка — цены нет.
+    const rates = Cache.get('спр_ставки_уборок');
+    const executorsById = {};
+    Cache.serviceExecutors().forEach((r) => { executorsById[r['id_исполнителя']] = r; });
+    function priceDefault(taskType, flatId, cleaningType, executorId) {
+      if (taskType === 'уборка' && flatId && cleaningType) {
+        const date = today();
+        const matching = rates.filter((r) =>
+          r['id_объекта'] === flatId && r['тип_уборки'] === cleaningType &&
+          String(r['действует_с'] || '') <= date &&
+          (!String(r['действует_по'] || '').trim() || date <= r['действует_по']));
+        if (matching.length) {
+          matching.sort((a, b) =>
+            String(b['действует_с']).localeCompare(String(a['действует_с'])));
+          return num(matching[0]['сумма_₽']) || null;
+        }
+      }
+      if (taskType === 'ремонт' && executorId) {
+        const exe = executorsById[executorId];
+        const master = exe && Cache.forDropdown('спр_мастера').find(
+          (m) => m['id_мастера'] === exe['id_в_учёте']);
+        if (master && num(master['ставка_дефолт_₽'])) {
+          return num(master['ставка_дефолт_₽']);
+        }
+      }
+      return null;
+    }
+
+    const COLUMNS = [
+      { status: 'новая', title: 'Новые', cls: 'kb-col-new' },
+      { status: 'в_работе', title: 'В работе', cls: 'kb-col-work' },
+      { status: 'выполнено', title: 'Выполнено', cls: 'kb-col-check' },
+      { status: 'подтверждено', title: 'Подтверждено', cls: 'kb-col-done' },
+    ];
+    const DONE_LIMIT = 12;
+
+    let tasks = [];
+    let showAllDone = false;
+    let filterExecutor = '';
+    let filterType = '';
+    const boardBox = h('div', { class: 'kb-board' });
+    const reloadBtn = h('button',
+      { class: 'btn-primary btn-auto', type: 'button' }, 'Обновить доску');
+
+    function setNote(text, cls) {
+      UI.clear(boardBox);
+      boardBox.append(h('p', { class: cls || 'muted' }, text));
+    }
+    function shortDate(v) {
+      const s = String(v || '').slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return '—';
+      const [y, m, d] = s.split('-');
+      return d + '.' + m + '.' + y;
+    }
+    const statusOf = (d) => String(d['статус'] || 'новая').trim();
+
+    // Патч задачи через очередь + оптимистичное обновление карточки.
+    function pushUpdate(data, patch, logAction, shortDesc) {
+      Object.assign(data, patch);
+      Queue.add('сервис_задача_обновление', {
+        taskId: data['id_задачи'],
+        patch,
+        actorId: myId,
+        logAction,
+        logTimestamp: new Date().toISOString(),
+        shortDesc: shortDesc ||
+          ('Задача ' + data['id_задачи'] + ' → ' + statusOf(data)),
+      });
+      render();
+    }
+
+    // Переход задачи в статус `to` со статусным timestamp (§4.4).
+    function moveTask(data, to, extraPatch) {
+      const patch = { 'статус': to, ...(extraPatch || {}) };
+      const now = new Date().toISOString();
+      if (to === 'в_работе') patch['взята_в_работу'] = now;
+      if (to === 'выполнено') patch['выполнена'] = now;
+      if (to === 'подтверждено') {
+        patch['подтверждена'] = now;
+        patch['id_подтвердившего'] = myId;
+      }
+      pushUpdate(data, patch, 'смена_статуса');
+    }
+
+    // ---------------- форма добавления (только менеджер) ----------------
+    function addForm() {
+      const typeSelect = selectInput();
+      fillSelect(typeSelect, TYPES.map((t) => ({ value: t, text: t })),
+        'Тип задачи...');
+      const flatSelect = selectInput();
+      fillSelect(flatSelect, activeFlats.map((f) => ({
+        value: f['id_объекта'], text: f['название_короткое'] || f['id_объекта'],
+      })), 'Квартира...');
+      const cleaningSelect = selectInput();
+      fillSelect(cleaningSelect, [
+        { value: 'плановая', text: 'плановая' },
+        { value: 'генеральная', text: 'генеральная' },
+      ], 'Тип уборки...');
+      cleaningSelect.style.display = 'none';
+      const descInput = textarea('Что сделать');
+      descInput.rows = 2;
+      const respSelect = selectInput();
+      fillPeople(respSelect, '— исполнитель —');
+      const dueInput = h('input', { class: 'field-input', type: 'date' });
+      const priceInput = numberInput();
+      priceInput.placeholder = 'Цена ₽';
+      const priceHint = h('div', { class: 'field-hint' });
+      const addBtn = h('button',
+        { class: 'kb-move-btn kb-save', type: 'button' }, '+ Добавить задачу');
+      const err = h('div', { class: 'field-error', style: 'display:none' });
+
+      function recompute() {
+        const t = typeSelect.value;
+        cleaningSelect.style.display = t === 'уборка' ? '' : 'none';
+        priceInput.placeholder = t === 'закупка' ? 'Ориент. бюджет ₽' : 'Цена ₽';
+        const def = priceDefault(t, flatSelect.value, cleaningSelect.value,
+          respSelect.value);
+        if (def) {
+          priceInput.value = def;
+          priceHint.textContent = 'дефолт: ' + def + ' ₽ — можно перебить';
+        } else {
+          priceHint.textContent = t === 'закупка'
+            ? 'закупка исполнителю не оплачивается — бюджет ориентировочный'
+            : (t ? 'дефолта нет — впишите цену вручную' : '');
+        }
+      }
+      [typeSelect, flatSelect, cleaningSelect, respSelect].forEach((el) =>
+        el.addEventListener('change', recompute));
+
+      addBtn.addEventListener('click', () => {
+        const t = typeSelect.value;
+        const desc = descInput.value.trim();
+        // Закупка «без объекта» допустима (§4.4); остальным нужен объект.
+        if (!t || !desc || (!flatSelect.value && t !== 'закупка') ||
+            !respSelect.value || (t === 'уборка' && !cleaningSelect.value)) {
+          err.textContent = !t ? 'Выберите тип задачи'
+            : (!desc ? 'Опишите задачу'
+              : (!respSelect.value ? 'Назначьте исполнителя'
+                : (t === 'уборка' && !cleaningSelect.value
+                  ? 'Выберите тип уборки' : 'Выберите квартиру')));
+          err.style.display = '';
+          return;
+        }
+        err.style.display = 'none';
+        const row = {
+          'дата_внесения': new Date().toISOString(),
+          'id_создателя': myId,
+          'тип_задачи': t,
+          'тип_уборки': t === 'уборка' ? cleaningSelect.value : '',
+          'источник': 'менеджер',
+          'id_объекта': flatSelect.value || '',
+          'описание': desc,
+          'id_исполнителя': respSelect.value,
+          'срок': dueInput.value || '',
+          'цена_₽': t === 'закупка' ? '' : (num(priceInput.value) || ''),
+          'ориентировочный_бюджет_₽':
+            t === 'закупка' ? (num(priceInput.value) || '') : '',
+          'статус': 'новая',
+        };
+        Queue.add('сервис_задача', {
+          row,
+          actorId: myId,
+          logTimestamp: new Date().toISOString(),
+          shortDesc: 'Задача (' + t + '): ' +
+            (flatName[flatSelect.value] || 'без объекта') + ' — ' +
+            desc.slice(0, 80),
+        });
+        tasks.push({ ...row, 'id_задачи': '', _pending: true });
+        typeSelect.value = ''; flatSelect.value = ''; descInput.value = '';
+        respSelect.value = ''; dueInput.value = ''; priceInput.value = '';
+        recompute();
+        render();
+      });
+
+      return h('div', { class: 'kb-add' },
+        typeSelect, flatSelect, cleaningSelect, descInput, respSelect,
+        dueInput, priceInput, priceHint, err, addBtn);
+    }
+
+    // ------------------------------ карточка -----------------------------
+    function taskCard(data) {
+      const id = data['id_задачи'];
+      const status = statusOf(data);
+      const pending = !!data._pending;
+      const mine = data['id_исполнителя'] === myId;
+      const t = data['тип_задачи'] || 'сервис';
+      const price = data['тип_задачи'] === 'закупка'
+        ? (data['ориентировочный_бюджет_₽']
+          ? '~' + data['ориентировочный_бюджет_₽'] + ' ₽' : '')
+        : (data['цена_₽'] ? data['цена_₽'] + ' ₽' : '');
+
+      // --- детали (ответственный/цена/комментарий) ---
+      const details = h('div', { class: 'kb-details', style: 'display:none' });
+      const respSelect = selectInput();
+      const priceInput = numberInput();
+      const priceComment = textInput('Почему изменили цену');
+      const noteInput = textInput('Комментарий');
+      noteInput.value = data['комментарий'] || '';
+      const saveBtn = h('button',
+        { class: 'kb-move-btn kb-save', type: 'button' }, 'Сохранить');
+      const dErr = h('div', { class: 'field-error', style: 'display:none' });
+
+      if (isManager) {
+        fillPeople(respSelect, '— исполнитель —');
+        respSelect.value = data['id_исполнителя'] || '';
+        details.append(field('Исполнитель', respSelect));
+      }
+      const priceEditable = status !== 'подтверждено' && canOverridePrice &&
+        (isManager || mine) && t !== 'закупка';
+      if (priceEditable) {
+        priceInput.value = data['цена_₽'] || '';
+        details.append(field('Цена ₽', priceInput));
+        if (!isManager) details.append(field('Причина изменения', priceComment));
+      }
+      details.append(field('Комментарий', noteInput), dErr, saveBtn);
+
+      saveBtn.addEventListener('click', () => {
+        const patch = { 'комментарий': noteInput.value.trim() };
+        let logAction = 'редактирование';
+        if (isManager) patch['id_исполнителя'] = respSelect.value;
+        if (priceEditable) {
+          const newPrice = num(priceInput.value) || '';
+          if (String(newPrice) !== String(data['цена_₽'] || '')) {
+            // Комментарий при перебитии обязателен для исполнителя (§6).
+            if (!isManager && !priceComment.value.trim()) {
+              dErr.textContent = 'Изменение цены — укажите причину.';
+              dErr.style.display = '';
+              return;
+            }
+            patch['цена_₽'] = newPrice;
+            if (!isManager) patch['цена_изменена'] = priceComment.value.trim();
+            logAction = 'изменение_цены';
+          }
+        }
+        dErr.style.display = 'none';
+        pushUpdate(data, patch, logAction,
+          'Задача ' + id + ': правка (' + logAction + ')');
+      });
+
+      const toggle = h('button', { class: 'kb-toggle', type: 'button' },
+        (isManager
+          ? '👤 ' + (data['id_исполнителя']
+            ? (personName[data['id_исполнителя']] || data['id_исполнителя'])
+            : 'не назначен')
+          : '💬 подробнее') +
+        (data['комментарий'] ? ' · есть' : ''));
+      toggle.addEventListener('click', () => {
+        const open = details.style.display !== 'none';
+        details.style.display = open ? 'none' : '';
+        card.classList.toggle('kb-card-open', !open);
+      });
+
+      // --- кнопки переходов по правам §5 ---
+      const moves = h('div', { class: 'kb-moves' });
+      const mkBtn = (label, fn, cls) => {
+        const btn = h('button',
+          { class: 'kb-move-btn' + (cls ? ' ' + cls : ''), type: 'button' },
+          label);
+        btn.addEventListener('click', fn);
+        return btn;
+      };
+      if (!pending) {
+        const movable = isManager || mine;
+        if (status === 'новая' && movable) {
+          moves.append(mkBtn('Взять в работу →', () => moveTask(data, 'в_работе')));
+        }
+        if (status === 'в_работе' && movable) {
+          moves.append(mkBtn('Выполнено →', () => moveTask(data, 'выполнено')));
+        }
+        if (status === 'выполнено' && isManager) {
+          moves.append(mkBtn('✓ Подтвердить', () => moveTask(data, 'подтверждено'),
+            'kb-save'));
+          moves.append(mkBtn('← Вернуть', () => {
+            const reason = prompt('Причина возврата (обязательно):');
+            if (!reason || !reason.trim()) return;
+            moveTask(data, 'в_работе', { 'причина_возврата': reason.trim() });
+          }));
+        }
+        // Отмена — менеджер/основатель, до подтверждения (§5).
+        if (isManager && status !== 'подтверждено') {
+          moves.append(mkBtn('✕', () => {
+            if (!confirm('Отменить задачу ' + id + '?')) return;
+            pushUpdate(data, { 'статус': CANCELLED }, 'смена_статуса',
+              'Задача ' + id + ' отменена');
+          }));
+        }
+      }
+
+      const metaBits = [];
+      if (data['срок']) metaBits.push('срок ' + shortDate(data['срок']));
+      if (price) metaBits.push(price);
+
+      const card = h('div', {
+        class: 'kb-card' + (pending ? ' kb-card-pending' : ''),
+      },
+        h('div', { class: 'kb-card-top' },
+          h('span', { class: 'task-date' },
+            (TYPE_ICONS[t] || '') + ' ' + shortDate(data['дата_внесения'])),
+          h('span', { class: 'kb-obj' },
+            flatName[data['id_объекта']] || data['id_объекта'] ||
+            (t === 'закупка' ? 'закупка' : '—'))),
+        h('p', { class: 'kb-desc' }, data['описание'] || ''),
+        metaBits.length
+          ? h('div', { class: 'kb-foot' }, metaBits.join(' · ')) : '',
+        data['причина_возврата'] && status === 'в_работе'
+          ? h('div', { class: 'field-error' },
+            'Возврат: ' + data['причина_возврата']) : '',
+        toggle, details, moves,
+        h('div', { class: 'kb-foot muted' }, pending ? 'отправляется…' :
+          (id + (status === 'подтверждено' && data['подтверждена']
+            ? ' · ' + shortDate(data['подтверждена']) : ''))));
+      return card;
+    }
+
+    // ------------------------------ рендер -------------------------------
+    function visibleTasks() {
+      return tasks.filter((d) => {
+        if (executor && d['id_исполнителя'] !== myId) return false;
+        if (filterExecutor && d['id_исполнителя'] !== filterExecutor) return false;
+        if (filterType && (d['тип_задачи'] || 'сервис') !== filterType) return false;
+        return statusOf(d) !== CANCELLED;
+      });
+    }
+
+    function render() {
+      UI.clear(boardBox);
+      const shown = visibleTasks();
+      COLUMNS.forEach((col) => {
+        let list = shown.filter((d) => statusOf(d) === col.status)
+          .sort((a, b) => String(b['дата_внесения'] || '')
+            .localeCompare(String(a['дата_внесения'] || '')));
+        const total = list.length;
+        let hidden = 0;
+        if (col.status === 'подтверждено' && !showAllDone && total > DONE_LIMIT) {
+          hidden = total - DONE_LIMIT;
+          list = list.slice(0, DONE_LIMIT);
+        }
+        const body = h('div', { class: 'kb-col-body' });
+        if (col.status === 'новая' && isManager) body.append(addForm());
+        if (!total) {
+          body.append(h('p', { class: 'kb-empty muted' }, 'пусто'));
+        } else {
+          list.forEach((d) => body.append(taskCard(d)));
+        }
+        if (hidden) {
+          const more = h('button', { class: 'link-btn kb-more', type: 'button' },
+            'показать ещё ' + hidden);
+          more.addEventListener('click', () => { showAllDone = true; render(); });
+          body.append(more);
+        }
+        boardBox.append(h('div', { class: 'kb-col ' + col.cls },
+          h('div', { class: 'kb-col-head' },
+            h('span', { class: 'kb-col-title' }, col.title),
+            h('span', { class: 'kb-col-count' }, String(total))),
+          body));
+      });
+    }
+
+    async function load() {
+      setNote('Загружаем доску…');
+      let res;
+      try {
+        res = await Journal.serviceRead(CONFIG.SERVICE_TASKS_SHEET);
+      } catch (err) {
+        console.error('Доска сервиса:', err);
+        setNote('Не удалось прочитать журнал задач файла сервиса: ' +
+          ((err && err.message) || 'ошибка сети') + '.', 'error-banner');
+        return;
+      }
+      tasks = res.records.map((r) => r.data)
+        .filter((d) => String(d['id_задачи'] || '').trim());
+      render();
+    }
+
+    reloadBtn.addEventListener('click', load);
+    Queue.onCommitted((item) => {
+      if (item && item.formType === 'сервис_задача' &&
+          document.body.contains(boardBox)) load();
+    });
+
+    // Фильтры менеджера (§5): исполнитель, тип.
+    const filters = h('div', { class: 'kb-filters' });
+    if (isManager) {
+      const fExec = selectInput();
+      fillPeople(fExec, 'Все исполнители');
+      fExec.addEventListener('change', () => {
+        filterExecutor = fExec.value; render();
+      });
+      const fType = selectInput();
+      fillSelect(fType, TYPES.map((tt) => ({ value: tt, text: tt })),
+        'Все типы');
+      fType.addEventListener('change', () => {
+        filterType = fType.value; render();
+      });
+      filters.append(fExec, fType);
+    }
+
+    const form = h('form', { class: 'op-form' },
+      h('div', { class: 'op-footer' },
+        h('span', { class: 'op-footer-hint' }, executor
+          ? 'Двигайте свои задачи: взяли — «В работу», сделали — ' +
+            '«Выполнено». Подтверждает менеджер.'
+          : 'Задача заводится в колонке «Новые». «Подтвердить» скоро ' +
+            'будет создавать начисление исполнителю автоматически.'),
+        h('div', { class: 'op-footer-actions' }, reloadBtn)),
+      filters,
+      h('div', { class: 'op-divider' }),
+      boardBox);
+    form.addEventListener('submit', (e) => { e.preventDefault(); load(); });
+    load();
+
+    return Screens.formScreen({
+      employee, title: executor ? 'Мои задачи' : 'Доска задач',
+      subtitle: executor
+        ? 'Ваши задачи: новая → в работе → выполнено. Подтверждает менеджер.'
+        : 'Сервисный блок: новая → в работе → выполнено → подтверждено.',
+      breadcrumb: 'Сервис',
+      content: form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
   return {
     openУборка, openМастер, openХозРасход, openПрочее, openBatch, openВыплата,
     openЗаселение, openОтчётСобственнику, openОтчётСотрудники,
     openПоискОпераций, openКорректировка,
     openЗадачиСервис,
+    openДоскаСервис,
     openПомощь,
     openНовыйСобственник, openНоваяКвартира, openНовыйСотрудник, openНоваяГорничная,
     openНовыйРеквизитСобственника,
