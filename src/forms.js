@@ -1041,6 +1041,7 @@ window.Forms = (() => {
       if (debtLoading) return debtLoading;
       debtLoading = Journal.readMany([
         CONFIG.JOURNAL_УБОРКИ, CONFIG.JOURNAL_МАСТЕР, CONFIG.JOURNAL_ВЫПЛАТЫ,
+        CONFIG.JOURNAL_СУПЕРВАЙЗЕР,
       ]).then((res) => { debtJournals = res; return res; });
       return debtLoading;
     }
@@ -1078,8 +1079,20 @@ window.Forms = (() => {
           'сумма_₽');
         return accrued - paid;
       }
-      // Сотрудник / собственник / кредитор: журналов начислений в
-      // Инкременте 3 ещё нет — честно показываем «нет данных» (§12.4).
+      if (type === 'сотрудник') {
+        // Супервайзер (ADR-032): сдельные начисления в
+        // журнал_супервайзер по стабильному id_сотрудника. У прочих
+        // сотрудников начислений там нет — прежнее «нет данных».
+        const recs = journals[CONFIG.JOURNAL_СУПЕРВАЙЗЕР].records;
+        const hasAny = recs.some(
+          (r) => r.data['id_супервайзера'] === recipientId);
+        if (!hasAny) return null;
+        const accrued = sumActive(recs,
+          (d) => d['id_супервайзера'] === recipientId, 'сумма_₽');
+        return accrued - paid;
+      }
+      // Собственник / кредитор: журналов начислений нет — «нет данных»
+      // (§12.4).
       return null;
     }
 
@@ -4766,6 +4779,115 @@ window.Forms = (() => {
       pushUpdate(data, patch, 'смена_статуса');
     }
 
+    // --- подтверждение с начислением (§7, TICKET-С1.3) ------------------
+
+    // Актуальная версия по стабильному id справочника боевого (§3.2
+    // INTERFACE_DATA_SPEC — как это делают существующие формы).
+    function currentVersion(sheet, stableField, stableId) {
+      const row = Cache.forDropdown(sheet)
+        .find((r) => r[stableField] === stableId);
+      return row ? row['id_версии'] : '';
+    }
+    function objectVersion(objId) {
+      if (!objId) return '';
+      const v = currentVersion('спр_объекты', 'id_объекта', objId);
+      if (v) return v;
+      // Отключённый объект не проходит фильтр активности — берём его
+      // последнюю версию: начисление по старой задаче важнее статуса.
+      const rows = Cache.get('спр_объекты')
+        .filter((r) => r['id_объекта'] === objId);
+      return rows.length ? rows[rows.length - 1]['id_версии'] : '';
+    }
+
+    // Маршрут начисления при подтверждении: куда и какой строкой (§7.1—
+    // 7.3). null — начисление не создаётся (закупка §7.4, исполнитель-
+    // сотрудник, несоответствие типа и роли); { error } — должно
+    // создаться, но данных не хватает: подтверждение блокируется громко.
+    function accrualRoute(data) {
+      const t = data['тип_задачи'] || 'сервис';
+      if (t === 'закупка') return null;
+      const exe = executorsById[data['id_исполнителя']];
+      if (!exe) return null;
+      const role = String(exe['роль'] || '').trim().toLowerCase();
+      const uchet = (exe['id_в_учёте'] || '').trim();
+      const price = num(data['цена_₽']);
+      if (!(price > 0)) {
+        return { error: 'у задачи нет цены — впишите её в деталях карточки' };
+      }
+      const when = String(data['выполнена'] || '').slice(0, 10) || today();
+      const base = {
+        'дата_внесения': new Date().toISOString(),
+        'id_менеджера': myId,
+        'статус': 'активна',
+        'комментарий': 'задача ' + data['id_задачи'],
+      };
+      if (t === 'уборка' && role === 'горничная') {
+        const ver = currentVersion('спр_горничные', 'id_горничной', uchet);
+        if (!ver) return { error: 'горничная ' + uchet + ' не найдена в спр_горничные' };
+        return { opKey: 'уборка', journal: CONFIG.JOURNAL_УБОРКИ, row: { ...base,
+          'дата_уборки': when, 'id_горничной': ver,
+          'id_объекта_версии': objectVersion(data['id_объекта']),
+          'тип_уборки': data['тип_уборки'] || 'плановая', 'сумма_₽': price } };
+      }
+      if (t === 'ремонт' && role === 'техник') {
+        const ver = currentVersion('спр_мастера', 'id_мастера', uchet);
+        if (!ver) return { error: 'мастер ' + uchet + ' не найден в спр_мастера' };
+        return { opKey: 'мастер', journal: CONFIG.JOURNAL_МАСТЕР, row: { ...base,
+          'дата': when, 'id_мастера': ver,
+          'id_объекта_версии': objectVersion(data['id_объекта']),
+          'тип_записи': 'выход',
+          'описание': String(data['описание'] || '').slice(0, 120),
+          'сумма_₽': price } };
+      }
+      if (role === 'супервайзер') {
+        // ADR-032: id_супервайзера — стабильный id_сотрудника, не версия.
+        if (!uchet) return { error: 'у супервайзера не заполнен id_в_учёте' };
+        const desc = (data['вид_работы'] ? data['вид_работы'] + ' — ' : '') +
+          String(data['описание'] || '').slice(0, 120);
+        return { opKey: 'супервайзер', journal: CONFIG.JOURNAL_СУПЕРВАЙЗЕР,
+          row: { ...base,
+            'дата': when, 'id_супервайзера': uchet,
+            'id_объекта_версии': objectVersion(data['id_объекта']),
+            'описание': desc, 'сумма_₽': price } };
+      }
+      return null;
+    }
+
+    function confirmTask(data) {
+      const route = accrualRoute(data);
+      if (route && route.error) {
+        alert('Подтверждение невозможно: ' + route.error);
+        return;
+      }
+      if (!route) {
+        if (data['тип_задачи'] !== 'закупка' &&
+            !confirm('Начисление по этой задаче не создаётся (исполнитель — ' +
+              'сотрудник, или тип задачи не совпадает с ролью). ' +
+              'Подтвердить без начисления?')) return;
+        moveTask(data, 'подтверждено');
+        return;
+      }
+      const now = new Date().toISOString();
+      const patch = { 'статус': 'подтверждено', 'подтверждена': now,
+        'id_подтвердившего': myId };
+      Object.assign(data, patch);
+      Queue.add('сервис_подтверждение', {
+        taskId: data['id_задачи'],
+        // Идемпотентность начисления — client_uuid задачи (§7.5);
+        // у задачи без uuid ключ стабильно выводится из её id.
+        taskUuid: data['client_uuid'] || ('task-' + data['id_задачи']),
+        opKey: route.opKey,
+        journal: route.journal,
+        accrualRow: route.row,
+        patch,
+        actorId: myId,
+        logTimestamp: now,
+        shortDesc: 'Задача ' + data['id_задачи'] + ' подтверждена, начисление ' +
+          num(data['цена_₽']) + ' ₽ (' + route.opKey + ')',
+      });
+      render();
+    }
+
     // ---------------- форма добавления (только менеджер) ----------------
     function addForm() {
       const typeSelect = selectInput();
@@ -4781,6 +4903,14 @@ window.Forms = (() => {
         { value: 'генеральная', text: 'генеральная' },
       ], 'Тип уборки...');
       cleaningSelect.style.display = 'none';
+      // Вид работы супервайзера с утверждёнными ставками (25.08.2026).
+      // Показывается для типа «сервис», когда исполнитель — супервайзер.
+      const workSelect = selectInput();
+      fillSelect(workSelect, CONFIG.SUPERVISOR_WORKS.map((w) => ({
+        value: w.key,
+        text: w.label + (w.price ? ' — ' + w.price + ' ₽' : ''),
+      })), 'Вид работы...');
+      workSelect.style.display = 'none';
       const descInput = textarea('Что сделать');
       descInput.rows = 2;
       const respSelect = selectInput();
@@ -4793,12 +4923,31 @@ window.Forms = (() => {
         { class: 'kb-move-btn kb-save', type: 'button' }, '+ Добавить задачу');
       const err = h('div', { class: 'field-error', style: 'display:none' });
 
+      const isSupChosen = () => {
+        const exe = executorsById[respSelect.value];
+        return !!exe && String(exe['роль'] || '').trim() === 'супервайзер';
+      };
+
       function recompute() {
         const t = typeSelect.value;
         cleaningSelect.style.display = t === 'уборка' ? '' : 'none';
+        workSelect.style.display =
+          (t === 'сервис' && isSupChosen()) ? '' : 'none';
         priceInput.placeholder = t === 'закупка' ? 'Ориент. бюджет ₽' : 'Цена ₽';
-        const def = priceDefault(t, flatSelect.value, cleaningSelect.value,
-          respSelect.value);
+        let def = null;
+        if (t === 'сервис' && isSupChosen() && workSelect.value) {
+          const w = CONFIG.SUPERVISOR_WORKS.find(
+            (x) => x.key === workSelect.value);
+          def = (w && w.price) || null;
+          if (!def) {
+            priceInput.value = '';
+            priceHint.textContent = 'цена по согласованию — впишите вручную';
+            return;
+          }
+        } else {
+          def = priceDefault(t, flatSelect.value, cleaningSelect.value,
+            respSelect.value);
+        }
         if (def) {
           priceInput.value = def;
           priceHint.textContent = 'дефолт: ' + def + ' ₽ — можно перебить';
@@ -4808,29 +4957,39 @@ window.Forms = (() => {
             : (t ? 'дефолта нет — впишите цену вручную' : '');
         }
       }
-      [typeSelect, flatSelect, cleaningSelect, respSelect].forEach((el) =>
-        el.addEventListener('change', recompute));
+      [typeSelect, flatSelect, cleaningSelect, respSelect, workSelect]
+        .forEach((el) => el.addEventListener('change', recompute));
 
       addBtn.addEventListener('click', () => {
         const t = typeSelect.value;
         const desc = descInput.value.trim();
-        // Закупка «без объекта» допустима (§4.4); остальным нужен объект.
-        if (!t || !desc || (!flatSelect.value && t !== 'закупка') ||
-            !respSelect.value || (t === 'уборка' && !cleaningSelect.value)) {
+        const supService = t === 'сервис' && isSupChosen();
+        // Объект обязателен для уборки/ремонта; закупка и сервисные
+        // задачи (обучение, стандарты) бывают «без объекта» (§4.4).
+        const needFlat = t === 'уборка' || t === 'ремонт';
+        if (!t || !desc || (needFlat && !flatSelect.value) ||
+            !respSelect.value || (t === 'уборка' && !cleaningSelect.value) ||
+            (supService && !workSelect.value)) {
           err.textContent = !t ? 'Выберите тип задачи'
             : (!desc ? 'Опишите задачу'
               : (!respSelect.value ? 'Назначьте исполнителя'
                 : (t === 'уборка' && !cleaningSelect.value
-                  ? 'Выберите тип уборки' : 'Выберите квартиру')));
+                  ? 'Выберите тип уборки'
+                  : (supService && !workSelect.value
+                    ? 'Выберите вид работы' : 'Выберите квартиру'))));
           err.style.display = '';
           return;
         }
         err.style.display = 'none';
+        const work = supService
+          ? CONFIG.SUPERVISOR_WORKS.find((x) => x.key === workSelect.value)
+          : null;
         const row = {
           'дата_внесения': new Date().toISOString(),
           'id_создателя': myId,
           'тип_задачи': t,
           'тип_уборки': t === 'уборка' ? cleaningSelect.value : '',
+          'вид_работы': work ? work.label : '',
           'источник': 'менеджер',
           'id_объекта': flatSelect.value || '',
           'описание': desc,
@@ -4857,8 +5016,8 @@ window.Forms = (() => {
       });
 
       return h('div', { class: 'kb-add' },
-        typeSelect, flatSelect, cleaningSelect, descInput, respSelect,
-        dueInput, priceInput, priceHint, err, addBtn);
+        typeSelect, flatSelect, cleaningSelect, respSelect, workSelect,
+        descInput, dueInput, priceInput, priceHint, err, addBtn);
     }
 
     // ------------------------------ карточка -----------------------------
@@ -4905,8 +5064,11 @@ window.Forms = (() => {
         if (priceEditable) {
           const newPrice = num(priceInput.value) || '';
           if (String(newPrice) !== String(data['цена_₽'] || '')) {
-            // Комментарий при перебитии обязателен для исполнителя (§6).
-            if (!isManager && !priceComment.value.trim()) {
+            // Комментарий при перебитии обязателен для исполнителя (§6),
+            // кроме «Прочих поручений» супервайзера — там цена по
+            // согласованию, супервайзер ставит её сам (фаундер 25.08).
+            const freePrice = data['вид_работы'] === 'Прочие поручения';
+            if (!isManager && !freePrice && !priceComment.value.trim()) {
               dErr.textContent = 'Изменение цены — укажите причину.';
               dErr.style.display = '';
               return;
@@ -4952,7 +5114,7 @@ window.Forms = (() => {
           moves.append(mkBtn('Выполнено →', () => moveTask(data, 'выполнено')));
         }
         if (status === 'выполнено' && isManager) {
-          moves.append(mkBtn('✓ Подтвердить', () => moveTask(data, 'подтверждено'),
+          moves.append(mkBtn('✓ Подтвердить', () => confirmTask(data),
             'kb-save'));
           moves.append(mkBtn('← Вернуть', () => {
             const reason = prompt('Причина возврата (обязательно):');
@@ -4971,6 +5133,7 @@ window.Forms = (() => {
       }
 
       const metaBits = [];
+      if (data['вид_работы']) metaBits.push(data['вид_работы']);
       if (data['срок']) metaBits.push('срок ' + shortDate(data['срок']));
       if (price) metaBits.push(price);
 
@@ -4992,7 +5155,9 @@ window.Forms = (() => {
         toggle, details, moves,
         h('div', { class: 'kb-foot muted' }, pending ? 'отправляется…' :
           (id + (status === 'подтверждено' && data['подтверждена']
-            ? ' · ' + shortDate(data['подтверждена']) : ''))));
+            ? ' · ' + shortDate(data['подтверждена']) : '') +
+          (data['id_операции_учёта']
+            ? ' · учёт ' + data['id_операции_учёта'] : ''))));
       return card;
     }
 
@@ -5171,8 +5336,9 @@ window.Forms = (() => {
         h('span', { class: 'op-footer-hint' }, executor
           ? 'Двигайте свои задачи: взяли — «В работу», сделали — ' +
             '«Выполнено». Подтверждает менеджер.'
-          : 'Задача заводится в колонке «Новые». «Подтвердить» скоро ' +
-            'будет создавать начисление исполнителю автоматически.'),
+          : 'Задача заводится в колонке «Новые». «Подтвердить» создаёт ' +
+            'начисление исполнителю в учёте автоматически (уборка, ' +
+            'ремонт, задачи супервайзера).'),
         h('div', { class: 'op-footer-actions' }, reloadBtn)),
       filters,
       h('div', { class: 'op-divider' }),

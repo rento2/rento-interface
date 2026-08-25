@@ -800,6 +800,36 @@
       return {};
     });
 
+    // Подтверждение задачи с начислением (TICKET-С1.3; ADR-031 п.4, §7)
+    // — единственная точка записи сервисного блока в боевой файл, токеном
+    // подтверждающего менеджера/основателя. Порядок: сначала начисление
+    // (идемпотентно по client_uuid ЗАДАЧИ — §7.5, дедуп в appendOperation),
+    // потом патч задачи (статус + id_операции_учёта) и логи. Обрыв между
+    // шагами закрывает ретрай: начисление дедупнется, патч допишется.
+    Queue.registerSender('сервис_подтверждение', async (formData) => {
+      const row = { ...formData.accrualRow, 'client_uuid': formData.taskUuid };
+      const idOperation = await Journal.appendOperation(formData.journal, row);
+      await Journal.logAction({
+        'timestamp': new Date().toISOString(),
+        'id_менеджера': formData.actorId,
+        'действие': 'создание',
+        'id_операции': idOperation,
+        'тип_операции': formData.opKey,
+        'краткое_описание': formData.shortDesc,
+      });
+      await Journal.serviceUpdate(CONFIG.SERVICE_TASKS_SHEET, 'id_задачи',
+        formData.taskId,
+        { ...formData.patch, 'id_операции_учёта': idOperation });
+      await Journal.serviceLog({
+        'timestamp': formData.logTimestamp,
+        'кто': formData.actorId,
+        'действие': 'подтверждение',
+        'id_записи': formData.taskId,
+        'краткое_описание': formData.shortDesc + ' → ' + idOperation,
+      });
+      return { idOperation };
+    });
+
     // Предложение новой категории (§14, TICKET-3.6). Пишет заявку в
     // _категории_на_модерации и аудит в _лог_действий. У листа модерации
     // нет client_uuid — дедуп по смыслу записи (idempotent на ретраях).
