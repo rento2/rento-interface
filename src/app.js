@@ -38,6 +38,7 @@
   }
 
   let appReady = false;       // библиотеки Google загружены, Sheets готов
+  let sessionStarted = false; // startSession дошёл до экрана (кеш поднят)
   let indicatorSlot = null;   // место индикатора очереди в шапке
   let todayCtl = null;        // контроллер секции «сегодня» (reload)
   let refreshLabelTimer = null;
@@ -965,6 +966,7 @@
       // сотрудник не резолвится по справочнику — обычный вход
       // (showLogin сам подсветит сохранённого сотрудника). ADR-025:
       // пароля команды нет, доступ контролируется Google Share.
+      sessionStarted = true;
       if (sessionValid() && currentEmployee()) {
         showMain();
       } else {
@@ -986,6 +988,7 @@
           Cache.startAutoRefresh(handleSheetsError);
           Queue.start();
           scheduleTokenRefresh();
+          sessionStarted = true;
           if (sessionValid() && currentEmployee()) {
             showMain();
           } else {
@@ -1017,6 +1020,12 @@
       if (mode === 'silent') {
         console.warn('Тихое продление токена не удалось:', errorResp);
         stopTokenRefresh();
+        // Boot-попытка (сессия ещё не поднята — заход с протухшим
+        // токеном): честно показываем «Подключить», это редкий случай
+        // умершей Google-сессии браузера. Решение фаундера 25.08:
+        // в течение суток попапа быть не должно — обычный путь
+        // проходит через успешное тихое продление ниже.
+        if (!sessionStarted) { showConnect(); return; }
         tokenRefreshTimer = setTimeout(() => { Auth.requestTokenSilent(); }, 60000);
         return;
       }
@@ -1035,6 +1044,10 @@
     if (mode === 'silent') {
       Sheets.setToken(token.access_token);
       scheduleTokenRefresh();
+      // Тихое переподключение при заходе (24-часовая сессия, фаундер
+      // 25.08): токен получен фоном, а сессия ещё не поднята — поднимаем,
+      // пользователь попадает сразу внутрь без попапа Google.
+      if (!sessionStarted) startSession(token);
       return;
     }
     startSession(token);
@@ -1126,6 +1139,13 @@
     const token = Auth.storedToken();
     if (token) {
       startSession(token);
+    } else if (sessionValid()) {
+      // Сессия команды жива (сутки), а токен Google истёк — пробуем
+      // продлить ТИХО, без попапа выбора аккаунта (фаундер 25.08:
+      // «никакого разлогина за 24 часа»). Экран подключения показан
+      // фоном: при успехе сменится сам, при неудаче остаётся кнопка.
+      showConnect();
+      Auth.requestTokenSilent();
     } else {
       showConnect();
     }

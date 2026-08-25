@@ -231,7 +231,7 @@ window.Screens = (() => {
       grid.append(opts.isExecutor
         ? card('Доска задач', 'доска_сервис', '📋')
         : card('Доска задач', 'задачи_сервис', '📋'));
-      if (opts.isExecutor) grid.append(card('Квартиры', 'квартиры', '🏠'));
+      if (opts.isExecutor) grid.append(card('Паспорт квартиры', 'квартиры', '🏠'));
       const only = h('section', { class: 'section' },
         h('div', { class: 'section-head' },
           h('span', { class: 'eyebrow' }, 'СЕРВИС'),
@@ -272,7 +272,7 @@ window.Screens = (() => {
     actions.append(h('span', { class: 'eyebrow eyebrow-sub' }, 'СЕРВИС'));
     actions.append(h('div', { class: 'cards-grid' },
       card('Доска задач', 'доска_сервис', '📋'),
-      card('Квартиры', 'квартиры', '🏠')));
+      card('Паспорт квартиры', 'квартиры', '🏠')));
 
     // Справочники (TICKET-8.1..8.3 / ADR-026). Доступны всем сотрудникам
     // (доработка 28.05.2026, решение Абдулы) — не только основателю.

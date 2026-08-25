@@ -4658,6 +4658,15 @@ window.Forms = (() => {
     return m;
   }
 
+  // Сотрудники для назначения задач: у менеджера — боевой справочник,
+  // у супервайзера (serviceOnly) — зеркало в файле сервиса (решение
+  // фаундера 25.08: супервайзер создаёт задачи на любого сотрудника).
+  function svcStaffRows() {
+    if (!Cache.isServiceOnly()) return Cache.forDropdown('спр_сотрудники');
+    return Cache.getService('спр_сотрудники').filter((r) =>
+      String(r['статус'] || '').trim().toLowerCase() === 'активный');
+  }
+
   // Актуальная версия по стабильному id справочника боевого (§3.2
   // INTERFACE_DATA_SPEC — как это делают существующие формы).
   function svcCurrentVersion(sheet, stableField, stableId) {
@@ -4829,10 +4838,14 @@ window.Forms = (() => {
     const employee = opts.employee;
     const role = String(employee['роль'] || '').trim().toLowerCase();
     const myId = employee['id_сотрудника'];
-    // Исполнитель — вошёл по спр_исполнители (EXE-*): только свои задачи.
-    // Менеджер/основатель — все задачи и все переходы.
+    // Исполнитель — вошёл по спр_исполнители (EXE-*): горничная/техник
+    // видят только свои задачи. Супервайзер (фаундер 25.08) — все
+    // задачи, создаёт новые на любого исполнителя/сотрудника; двигает
+    // по-прежнему только свои, подтверждает только менеджер/основатель
+    // (у супервайзера физически нет доступа к боевому файлу).
     const executor = !!employee['_исполнитель'];
     const isManager = !executor;
+    const supervisor = executor && role === 'супервайзер';
     const canOverridePrice = isManager ||
       role === 'техник' || role === 'супервайзер';   // горничная — нет (§6)
 
@@ -4865,8 +4878,9 @@ window.Forms = (() => {
     }));
     // Сотрудник, заведённый исполнителем (Тамара EMP-005 ↔ EXE-001), в
     // назначении показывается один раз — исполнителем (REVIEW-C1 №3):
-    // задача на staff-id ушла бы в «без начисления».
-    Cache.forDropdown('спр_сотрудники').forEach((r) => {
+    // задача на staff-id ушла бы в «без начисления». Источник — боевой
+    // справочник или зеркало файла сервиса (svcStaffRows).
+    svcStaffRows().forEach((r) => {
       if (executorUchet.has(r['id_сотрудника'])) return;
       people.push({
         id: r['id_сотрудника'], name: r['фио'] || r['id_сотрудника'],
@@ -5169,7 +5183,7 @@ window.Forms = (() => {
       });
 
       const toggle = h('button', { class: 'kb-toggle', type: 'button' },
-        (isManager
+        ((isManager || supervisor)
           ? '👤 ' + (data['id_исполнителя']
             ? (personName[data['id_исполнителя']] || data['id_исполнителя'])
             : 'не назначен')
@@ -5253,7 +5267,7 @@ window.Forms = (() => {
     // ------------------------------ рендер -------------------------------
     function visibleTasks() {
       return tasks.filter((d) => {
-        if (executor && d['id_исполнителя'] !== myId) return false;
+        if (executor && !supervisor && d['id_исполнителя'] !== myId) return false;
         if (filterExecutor && d['id_исполнителя'] !== filterExecutor) return false;
         if (filterType && (d['тип_задачи'] || 'сервис') !== filterType) return false;
         return statusOf(d) !== CANCELLED;
@@ -5355,7 +5369,9 @@ window.Forms = (() => {
           list = list.slice(0, DONE_LIMIT);
         }
         const body = h('div', { class: 'kb-col-body' });
-        if (col.status === 'новая' && isManager) body.append(addForm());
+        if (col.status === 'новая' && (isManager || supervisor)) {
+          body.append(addForm());
+        }
         if (!total) {
           body.append(h('p', { class: 'kb-empty muted' }, 'пусто'));
         } else {
@@ -5403,9 +5419,10 @@ window.Forms = (() => {
           document.body.contains(boardBox)) load();
     });
 
-    // Фильтры менеджера (§5): исполнитель, тип.
+    // Фильтры (§5): исполнитель, тип. У супервайзера тоже — он видит
+    // все задачи (фаундер 25.08).
     const filters = h('div', { class: 'kb-filters' });
-    if (isManager) {
+    if (isManager || supervisor) {
       const fExec = selectInput();
       fillPeople(fExec, 'Все исполнители');
       fExec.addEventListener('change', () => {
@@ -5422,12 +5439,15 @@ window.Forms = (() => {
 
     const form = h('form', { class: 'op-form' },
       h('div', { class: 'op-footer' },
-        h('span', { class: 'op-footer-hint' }, executor
-          ? 'Двигайте свои задачи: взяли — «В работу», сделали — ' +
-            '«Выполнено». Подтверждает менеджер.'
-          : 'Задача заводится в колонке «Новые». «Подтвердить» создаёт ' +
-            'начисление исполнителю в учёте автоматически (уборка, ' +
-            'ремонт, задачи супервайзера).'),
+        h('span', { class: 'op-footer-hint' }, supervisor
+          ? 'Вы видите все задачи и заводите новые на любого. Свои ' +
+            'двигайте по мере работы; подтверждает менеджер.'
+          : (executor
+            ? 'Двигайте свои задачи: взяли — «В работу», сделали — ' +
+              '«Выполнено». Подтверждает менеджер.'
+            : 'Задача заводится в колонке «Новые». «Подтвердить» создаёт ' +
+              'начисление исполнителю в учёте автоматически (уборка, ' +
+              'ремонт, задачи супервайзера).')),
         h('div', { class: 'op-footer-actions' }, reloadBtn)),
       filters,
       h('div', { class: 'op-divider' }),
@@ -5436,8 +5456,9 @@ window.Forms = (() => {
     load();
 
     return Screens.formScreen({
-      employee, title: executor ? 'Мои задачи' : 'Доска задач',
-      subtitle: executor
+      employee,
+      title: (executor && !supervisor) ? 'Мои задачи' : 'Доска задач',
+      subtitle: (executor && !supervisor)
         ? 'Ваши задачи: новая → в работе → выполнено. Подтверждает менеджер.'
         : 'Сервисный блок: новая → в работе → выполнено → подтверждено.',
       breadcrumb: 'Сервис',
@@ -5501,8 +5522,8 @@ window.Forms = (() => {
     form.addEventListener('submit', (e) => e.preventDefault());
 
     return Screens.formScreen({
-      employee, title: 'Квартиры',
-      subtitle: 'Карточка квартиры: паспорт, опись, улучшения.',
+      employee, title: 'Паспорт квартиры',
+      subtitle: 'Выберите квартиру: паспорт, опись, улучшения.',
       breadcrumb: 'Сервис',
       content: form,
       onBack: () => opts.onExit(),
@@ -5520,7 +5541,9 @@ window.Forms = (() => {
     const isManager = !executor;
     const role = String(employee['роль'] || '').trim().toLowerCase();
     // Паспорт и опись правят супервайзер + штатные (§3); задачи из
-    // карточки заводит менеджер/основатель (супервайзер — через обход, С2).
+    // карточки заводят менеджер/основатель И супервайзер (фаундер 25.08:
+    // супервайзер видит все задачи и создаёт на любого).
+    const supervisor = executor && role === 'супервайзер';
     const canEdit = isManager || role === 'супервайзер';
 
     const PASSPORT_FIELDS = [
@@ -5544,7 +5567,7 @@ window.Forms = (() => {
     Cache.serviceExecutors().forEach((r) => {
       personName[r['id_исполнителя']] = r['фио'] || r['id_исполнителя'];
     });
-    Cache.forDropdown('спр_сотрудники').forEach((r) => {
+    svcStaffRows().forEach((r) => {
       personName[r['id_сотрудника']] = r['фио'] || r['id_сотрудника'];
     });
 
@@ -5737,8 +5760,9 @@ window.Forms = (() => {
       Cache.serviceExecutors().forEach((r) => respSelect.append(
         h('option', { value: r['id_исполнителя'] },
           (r['фио'] || r['id_исполнителя']) + ' — ' + (r['роль'] || ''))));
-      // Staff-дубли исполнителей скрыты (REVIEW-C1 №3).
-      Cache.forDropdown('спр_сотрудники').forEach((r) => {
+      // Staff-дубли исполнителей скрыты (REVIEW-C1 №3); источник —
+      // боевой справочник или зеркало файла сервиса (svcStaffRows).
+      svcStaffRows().forEach((r) => {
         if (uchetDup.has(r['id_сотрудника'])) return;
         respSelect.append(
           h('option', { value: r['id_сотрудника'] }, r['фио'] || r['id_сотрудника']));
@@ -5833,7 +5857,8 @@ window.Forms = (() => {
 
     function renderTasks() {
       UI.clear(tasksBox);
-      const mineOnly = (d) => !executor || d['id_исполнителя'] === myId;
+      const mineOnly = (d) =>
+        !executor || supervisor || d['id_исполнителя'] === myId;
       const open = tasks.filter((d) =>
         !['подтверждено', 'отменена'].includes(String(d['статус'] || 'новая')) &&
         mineOnly(d));
@@ -5845,7 +5870,7 @@ window.Forms = (() => {
           h('span', { class: 'eyebrow' }, 'УЛУЧШЕНИЯ'),
           h('h2', { class: 'h2' },
             'Задачи квартиры' + (open.length ? ' — ' + open.length : ''))));
-      if (isManager) sec.append(addTaskForm());
+      if (isManager || supervisor) sec.append(addTaskForm());
       if (!open.length && !done.length) {
         sec.append(h('p', { class: 'muted' }, 'Открытых задач нет.'));
       }
@@ -6035,7 +6060,7 @@ window.Forms = (() => {
       employee,
       title: flat['название_короткое'] || flatId,
       subtitle: 'Паспорт · опись · улучшения',
-      breadcrumb: 'Сервис › Квартиры',
+      breadcrumb: 'Сервис › Паспорт квартиры',
       content,
       onBack: () => opts.onExit(),
       onRefresh: opts.onRefresh, onLogout: opts.onLogout,
