@@ -4704,6 +4704,13 @@ window.Forms = (() => {
     let showAllDone = false;
     let filterExecutor = '';
     let filterType = '';
+    // Архив (ADR-034): подтверждённые задачи прошлых месяцев уходят из
+    // канбана в отдельный вид. Логический архив — строки остаются в
+    // журнале, физического переноса нет.
+    let archiveOpen = false;
+    const monthKey = (iso) => String(iso || '').slice(0, 7);   // YYYY-MM
+    const thisMonth = today().slice(0, 7);
+    const confirmedAt = (d) => d['подтверждена'] || d['дата_внесения'];
     const boardBox = h('div', { class: 'kb-board' });
     const reloadBtn = h('button',
       { class: 'btn-primary btn-auto', type: 'button' }, 'Обновить доску');
@@ -4988,13 +4995,91 @@ window.Forms = (() => {
       });
     }
 
+    // Архивный вид (ADR-034): подтверждённые задачи прошлых месяцев,
+    // сгруппированные по месяцам, со сводкой (сколько, по типам, суммы
+    // по исполнителям). Права те же: исполнитель видит только свои.
+    function renderArchive() {
+      UI.clear(boardBox);
+      const back = h('button',
+        { class: 'btn-primary btn-auto', type: 'button' }, '← К доске');
+      back.addEventListener('click', () => { archiveOpen = false; render(); });
+      const wrap = h('div', { class: 'kb-archive' }, back);
+
+      const confirmed = visibleTasks()
+        .filter((d) => statusOf(d) === 'подтверждено' && !d._pending);
+      const byMonth = {};
+      confirmed.forEach((d) => {
+        const m = monthKey(confirmedAt(d));
+        (byMonth[m] = byMonth[m] || []).push(d);
+      });
+      const months = Object.keys(byMonth).sort().reverse();
+      if (!months.length) wrap.append(h('p', { class: 'muted' }, 'Архив пуст.'));
+
+      months.forEach((m) => {
+        const list = byMonth[m].sort((a, b) =>
+          String(confirmedAt(b)).localeCompare(String(confirmedAt(a))));
+        const typeCnt = {};
+        const execStat = {};
+        let sum = 0;
+        list.forEach((d) => {
+          const t = d['тип_задачи'] || 'сервис';
+          typeCnt[t] = (typeCnt[t] || 0) + 1;
+          const p = num(d['цена_₽']);
+          sum += p;
+          const e = d['id_исполнителя'] || '—';
+          execStat[e] = execStat[e] || { n: 0, s: 0 };
+          execStat[e].n += 1;
+          execStat[e].s += p;
+        });
+        const md = new Date(m + '-01T00:00:00');
+        const monthTitle = isNaN(md) ? m : new Intl.DateTimeFormat('ru-RU',
+          { month: 'long', year: 'numeric' }).format(md);
+
+        const items = h('div', { class: 'kb-archive-list' });
+        list.forEach((d) => {
+          items.append(h('div', { class: 'kb-archive-row' },
+            h('span', { class: 'muted' }, shortDate(confirmedAt(d))),
+            h('span', { class: 'kb-obj' },
+              flatName[d['id_объекта']] || d['id_объекта'] || '—'),
+            h('span', { class: 'kb-archive-desc' }, d['описание'] || ''),
+            h('span', { class: 'muted' },
+              (personName[d['id_исполнителя']] || d['id_исполнителя'] || '') +
+              (d['цена_₽'] ? ' · ' + d['цена_₽'] + ' ₽' : ''))));
+        });
+
+        wrap.append(h('section', { class: 'section kb-archive-month' },
+          h('h2', { class: 'h2' }, monthTitle),
+          h('p', { class: 'muted' },
+            list.length + ' задач · ' +
+            Object.entries(typeCnt).map(([t, n]) => t + ' ' + n).join(', ') +
+            (sum ? ' · на сумму ' + sum.toLocaleString('ru-RU') + ' ₽' : '')),
+          h('p', { class: 'muted' },
+            Object.entries(execStat).map(([e, v]) =>
+              (personName[e] || e) + ': ' + v.n +
+              (v.s ? ' (' + v.s.toLocaleString('ru-RU') + ' ₽)' : ''))
+              .join(' · ')),
+          items));
+      });
+      boardBox.append(wrap);
+    }
+
     function render() {
+      if (archiveOpen) { renderArchive(); return; }
       UI.clear(boardBox);
       const shown = visibleTasks();
       COLUMNS.forEach((col) => {
         let list = shown.filter((d) => statusOf(d) === col.status)
           .sort((a, b) => String(b['дата_внесения'] || '')
             .localeCompare(String(a['дата_внесения'] || '')));
+        // Архив (ADR-034): в канбане — только подтверждённые текущего
+        // месяца; прошлые месяцы уходят в архивный вид сами 1-го числа.
+        let archivedCount = 0;
+        if (col.status === 'подтверждено') {
+          const current = list.filter((d) =>
+            monthKey(confirmedAt(d)) === thisMonth);
+          archivedCount = list.length - current.length;
+          list = current;
+        }
         const total = list.length;
         let hidden = 0;
         if (col.status === 'подтверждено' && !showAllDone && total > DONE_LIMIT) {
@@ -5013,6 +5098,12 @@ window.Forms = (() => {
             'показать ещё ' + hidden);
           more.addEventListener('click', () => { showAllDone = true; render(); });
           body.append(more);
+        }
+        if (archivedCount) {
+          const arc = h('button', { class: 'link-btn kb-more', type: 'button' },
+            'Архив: ' + archivedCount + ' задач прошлых месяцев');
+          arc.addEventListener('click', () => { archiveOpen = true; render(); });
+          body.append(arc);
         }
         boardBox.append(h('div', { class: 'kb-col ' + col.cls },
           h('div', { class: 'kb-col-head' },

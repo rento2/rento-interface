@@ -1081,5 +1081,20 @@ body {
 .kb-filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .kb-filters .field-input { max-width: 260px; padding: 8px 10px; font-size: 13px; }
 
+/* Архив подтверждённых задач (ADR-034): месяцы со сводкой + строки. */
+.kb-archive { display: flex; flex-direction: column; gap: 8px; }
+.kb-archive-month { margin-top: 16px; }
+.kb-archive-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.kb-archive-row {
+  display: grid; grid-template-columns: 84px 160px 1fr auto;
+  gap: 10px; align-items: baseline;
+  padding: 8px 10px; font-size: 13px;
+  background: var(--surface-0); border-radius: 10px;
+}
+.kb-archive-desc { overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .kb-archive-row { grid-template-columns: 84px 1fr; }
+}
+
 /* Карточка, которую очередь ещё не дописала в лист. */
 .kb-card-pending { opacity: 0.65; border-style: dashed; cursor: default; }
