@@ -4005,7 +4005,9 @@ window.Forms = (() => {
   //   - горничные: уборки за период (адрес + стоимость) из журнал_уборки;
   //   - мастера: задачи за период из журнал_мастер;
   //   - сотрудники: начислено из журнал_менеджеры_смены (оклад в журналах
-  //     не начисляется → у окладных 0);
+  //     не начисляется → у окладных 0) + сдельные начисления из
+  //     журнал_супервайзер (ADR-032, REVIEW-C1 №2 — симметрично
+  //     подсказке долга в «+ Выплата»);
   //   - выплаты за период из журнал_выплаты.
   // «Долг Ренто» — полный текущий: opening (система_начальные_долги, на
   // DEBT_START) + всё начислено − всё выплачено с DEBT_START. Совпадает с
@@ -4114,10 +4116,12 @@ window.Forms = (() => {
       setStatus('Считаем…');
       try {
         const res = await Journal.readMany(
-          [p.accrSheet, CONFIG.JOURNAL_ВЫПЛАТЫ, 'система_начальные_долги']);
+          [p.accrSheet, CONFIG.JOURNAL_ВЫПЛАТЫ, 'система_начальные_долги',
+            CONFIG.JOURNAL_СУПЕРВАЙЗЕР]);
         render(p, res[p.accrSheet].records,
           res[CONFIG.JOURNAL_ВЫПЛАТЫ].records,
-          res['система_начальные_долги'].records);
+          res['система_начальные_долги'].records,
+          res[CONFIG.JOURNAL_СУПЕРВАЙЗЕР].records);
       } catch (err) {
         console.error('Отчёт по сотрудникам:', err);
         setStatus('Не удалось сформировать отчёт: ' +
@@ -4125,7 +4129,7 @@ window.Forms = (() => {
       }
     }
 
-    function render(p, accrRecs, payRecs, openRecs) {
+    function render(p, accrRecs, payRecs, openRecs, supRecs) {
       UI.clear(resultsBox);
       const inPeriod = (v) => {
         const s = d10(v); return s >= fromEl.value && s <= toEl.value;
@@ -4134,6 +4138,10 @@ window.Forms = (() => {
       const my = (d) => d[p.idCol] === p.id && isActive(d);
       const myPay = (d) => d['тип_получателя'] === p.payType &&
         d['id_получателя'] === p.id && isActive(d);
+      // Сдельные начисления супервайзера (ADR-032): id_супервайзера —
+      // стабильный id_сотрудника.
+      const mySup = (d) => p.group === 'сотрудник' &&
+        d['id_супервайзера'] === p.id && isActive(d);
 
       resultsBox.append(h('p', { class: 'muted' },
         p.name + ' · ' + p.roleText + ' · период ' +
@@ -4175,11 +4183,33 @@ window.Forms = (() => {
         }
       } else {
         const sm = accrRecs.filter((r) => my(r.data) && inPeriod(r.data['дата_смены']));
-        resultsBox.append(totals('Начислено за период',
+        resultsBox.append(totals('Начислено по сменам за период',
           money(sumOf(sm, () => true))));
         if (!sm.length) {
           resultsBox.append(h('p', { class: 'muted' },
             'Начислений по сменам нет (оклад в журналах не начисляется).'));
+        }
+        // Сдельные задачи супервайзера (REVIEW-C1 №2). Блок показываем
+        // супервайзеру всегда, прочим сотрудникам — только если строки есть.
+        const sup = (supRecs || []).filter(
+          (r) => mySup(r.data) && inPeriod(r.data['дата']));
+        const isSupRole =
+          String(p.roleText || '').trim().toLowerCase() === 'супервайзер';
+        if (sup.length || isSupRole) {
+          resultsBox.append(section('Задачи супервайзера за период'));
+          if (sup.length) {
+            const t = h('div', { class: 'today-table' });
+            t.append(thRow(['ДАТА', 'ЗАДАЧА', 'СУММА']));
+            sup.forEach((r) => t.append(dataRow([
+              d10(r.data['дата']),
+              r.data['описание'] || '—',
+              money(num(r.data['сумма_₽']))])));
+            resultsBox.append(t);
+          } else {
+            resultsBox.append(h('p', { class: 'muted' }, 'Задач за период нет.'));
+          }
+          resultsBox.append(totals('Начислено по задачам за период',
+            money(sumOf(sup, () => true))));
         }
       }
 
@@ -4202,7 +4232,8 @@ window.Forms = (() => {
       // --- долг Ренто (текущий): opening + всё начислено − всё выплачено с DEBT_START ---
       const openRow = openRecs.find((r) => r.data['id'] === p.id);
       const opening = openRow ? num(openRow.data['долг_на_дату_₽']) : 0;
-      const accrAll = sumOf(accrRecs, (d) => my(d) && sinceStart(d[p.dateCol]));
+      const accrAll = sumOf(accrRecs, (d) => my(d) && sinceStart(d[p.dateCol])) +
+        sumOf(supRecs || [], (d) => mySup(d) && sinceStart(d['дата']));
       const paidAll = sumOf(payRecs, (d) => myPay(d) && sinceStart(d['дата_выплаты']));
       const debt = opening + accrAll - paidAll;
       resultsBox.append(h('div', { class: 'op-divider' }));
@@ -4326,9 +4357,12 @@ window.Forms = (() => {
     }
     function shortDate(v) {
       const s = String(v || '').slice(0, 10);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return '—';
-      const [y, m, d] = s.split('-');
-      return d + '.' + m + '.' + y;
+      const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+      if (iso) return iso[3] + '.' + iso[2] + '.' + iso[1];
+      // USER_ENTERED мог распарсить дату, и чтение вернёт локальный
+      // формат DD.MM.YYYY (REVIEW-C1 №6) — показываем как есть.
+      if (/^\d{2}\.\d{2}\.\d{4}$/.test(s)) return s;
+      return '—';
     }
     const statusOf = (d) => String(d['статус'] || 'новая').trim();
 
@@ -4678,7 +4712,14 @@ window.Forms = (() => {
   function svcAccrualRoute(data, managerId) {
     const t = data['тип_задачи'] || 'сервис';
     if (t === 'закупка') return null;
-    const exe = svcExecutorsById()[data['id_исполнителя']];
+    let exe = svcExecutorsById()[data['id_исполнителя']];
+    if (!exe) {
+      // Задача назначена на staff-id (EMP-005 вместо EXE-001) — резолвим
+      // в исполнителя по id_в_учёте, чтобы начисление не потерялось
+      // (REVIEW-C1 №3, защита в глубину поверх дедупа выпадашек).
+      exe = Cache.serviceExecutors().find(
+        (r) => (r['id_в_учёте'] || '').trim() === data['id_исполнителя']) || null;
+    }
     if (!exe) return null;
     const role = String(exe['роль'] || '').trim().toLowerCase();
     const uchet = (exe['id_в_учёте'] || '').trim();
@@ -4711,7 +4752,10 @@ window.Forms = (() => {
         'описание': String(data['описание'] || '').slice(0, 120),
         'сумма_₽': price } };
     }
-    if (role === 'супервайзер') {
+    // Супервайзер начисляется только по типу «сервис» (REVIEW-C1 №10):
+    // уборка/ремонт на супервайзере — несоответствие типа и роли, как у
+    // горничной/техника → confirm «без начисления».
+    if (role === 'супервайзер' && t === 'сервис') {
       // ADR-032: id_супервайзера — стабильный id_сотрудника, не версия.
       if (!uchet) return { error: 'у супервайзера не заполнен id_в_учёте' };
       const desc = (data['вид_работы'] ? data['вид_работы'] + ' — ' : '') +
@@ -4747,7 +4791,7 @@ window.Forms = (() => {
         taskId: data['id_задачи'],
         patch,
         actorId: managerId,
-        logAction: 'смена_статуса',
+        logAction: 'подтверждение',
         logTimestamp: now,
         shortDesc: 'Задача ' + data['id_задачи'] + ' → подтверждено (без начисления)',
       });
@@ -4798,10 +4842,12 @@ window.Forms = (() => {
     const TYPE_ICONS = { 'уборка': '🧹', 'сервис': '🛠', 'ремонт': '🔧', 'закупка': '🛒' };
 
     // Квартиры — из файла сервиса (стабильные id; у менеджера и
-    // исполнителя одинаково). Название по id — для карточек.
+    // исполнителя одинаково). Название по id — для карточек. «Пауза»
+    // доступна для задач (ген.уборка перед расконсервацией — REVIEW-C1
+    // №11), «отключён» — нет.
     const flats = Cache.getService('спр_квартиры');
     const activeFlats = flats.filter((f) =>
-      String(f['статус'] || '').trim() === 'активен');
+      ['активен', 'пауза'].includes(String(f['статус'] || '').trim()));
     const flatName = {};
     flats.forEach((f) => { flatName[f['id_объекта']] = f['название_короткое'] || f['id_объекта']; });
 
@@ -4810,15 +4856,23 @@ window.Forms = (() => {
     // требует синхронизации с SERVICE_SPEC §4.4). У исполнителя боевого
     // кеша нет — там будет только список исполнителей, этого хватает.
     const people = [];
+    const executorUchet = new Set(Cache.serviceExecutors()
+      .map((r) => (r['id_в_учёте'] || '').trim()).filter(Boolean));
     Cache.serviceExecutors().forEach((r) => people.push({
       id: r['id_исполнителя'],
       name: (r['фио'] || r['id_исполнителя']) + ' — ' + (r['роль'] || ''),
       group: 'исполнитель',
     }));
-    Cache.forDropdown('спр_сотрудники').forEach((r) => people.push({
-      id: r['id_сотрудника'], name: r['фио'] || r['id_сотрудника'],
-      group: 'сотрудник',
-    }));
+    // Сотрудник, заведённый исполнителем (Тамара EMP-005 ↔ EXE-001), в
+    // назначении показывается один раз — исполнителем (REVIEW-C1 №3):
+    // задача на staff-id ушла бы в «без начисления».
+    Cache.forDropdown('спр_сотрудники').forEach((r) => {
+      if (executorUchet.has(r['id_сотрудника'])) return;
+      people.push({
+        id: r['id_сотрудника'], name: r['фио'] || r['id_сотрудника'],
+        group: 'сотрудник',
+      });
+    });
     const personName = {};
     people.forEach((p) => { personName[p.id] = p.name; });
     // Резолв имён для истории: мигрированные задачи ссылаются на родные
@@ -4876,9 +4930,12 @@ window.Forms = (() => {
     }
     function shortDate(v) {
       const s = String(v || '').slice(0, 10);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return '—';
-      const [y, m, d] = s.split('-');
-      return d + '.' + m + '.' + y;
+      const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+      if (iso) return iso[3] + '.' + iso[2] + '.' + iso[1];
+      // USER_ENTERED мог распарсить дату, и чтение вернёт локальный
+      // формат DD.MM.YYYY (REVIEW-C1 №6) — показываем как есть.
+      if (/^\d{2}\.\d{2}\.\d{4}$/.test(s)) return s;
+      return '—';
     }
     const statusOf = (d) => String(d['статус'] || 'новая').trim();
 
@@ -4917,7 +4974,9 @@ window.Forms = (() => {
         'Тип задачи...');
       const flatSelect = selectInput();
       fillSelect(flatSelect, activeFlats.map((f) => ({
-        value: f['id_объекта'], text: f['название_короткое'] || f['id_объекта'],
+        value: f['id_объекта'],
+        text: (f['название_короткое'] || f['id_объекта']) +
+          (String(f['статус']).trim() === 'пауза' ? ' (пауза)' : ''),
       })), 'Квартира...');
       const cleaningSelect = selectInput();
       fillSelect(cleaningSelect, [
@@ -5089,7 +5148,11 @@ window.Forms = (() => {
             // Комментарий при перебитии обязателен для исполнителя (§6),
             // кроме «Прочих поручений» супервайзера — там цена по
             // согласованию, супервайзер ставит её сам (фаундер 25.08).
-            const freePrice = data['вид_работы'] === 'Прочие поручения';
+            // Матчим по key через label (REVIEW-C1 №9): переименование
+            // label в конфиге не отвяжет старые задачи, пока строка та же.
+            const wrk = CONFIG.SUPERVISOR_WORKS.find(
+              (x) => x.label === data['вид_работы']);
+            const freePrice = !!wrk && wrk.key === 'прочее';
             if (!isManager && !freePrice && !priceComment.value.trim()) {
               dErr.textContent = 'Изменение цены — укажите причину.';
               dErr.style.display = '';
@@ -5141,7 +5204,11 @@ window.Forms = (() => {
           moves.append(mkBtn('← Вернуть', () => {
             const reason = prompt('Причина возврата (обязательно):');
             if (!reason || !reason.trim()) return;
-            moveTask(data, 'в_работе', { 'причина_возврата': reason.trim() });
+            // Лог-действие «возврат» из enum §4.6 (REVIEW-C1 №7).
+            const patch = { 'статус': 'в_работе',
+              'причина_возврата': reason.trim() };
+            pushUpdate(data, patch, 'возврат',
+              'Задача ' + data['id_задачи'] + ' возвращена: ' + reason.trim());
           }));
         }
         // Отмена — менеджер/основатель, до подтверждения (§5).
@@ -5629,7 +5696,11 @@ window.Forms = (() => {
           btns.append(mk('← вернуть', () => {
             const reason = prompt('Причина возврата (обязательно):');
             if (!reason || !reason.trim()) return;
-            moveTo(data, 'в_работе', { 'причина_возврата': reason.trim() });
+            // Лог-действие «возврат» из enum §4.6 (REVIEW-C1 №7).
+            taskPatch(data,
+              { 'статус': 'в_работе', 'причина_возврата': reason.trim() },
+              'возврат',
+              'Задача ' + data['id_задачи'] + ' возвращена: ' + reason.trim());
           }));
         }
       }
@@ -5661,11 +5732,17 @@ window.Forms = (() => {
       cleaningSelect.style.display = 'none';
       const respSelect = selectInput();
       respSelect.append(h('option', { value: '' }, '— исполнитель —'));
+      const uchetDup = new Set(Cache.serviceExecutors()
+        .map((r) => (r['id_в_учёте'] || '').trim()).filter(Boolean));
       Cache.serviceExecutors().forEach((r) => respSelect.append(
         h('option', { value: r['id_исполнителя'] },
           (r['фио'] || r['id_исполнителя']) + ' — ' + (r['роль'] || ''))));
-      Cache.forDropdown('спр_сотрудники').forEach((r) => respSelect.append(
-        h('option', { value: r['id_сотрудника'] }, r['фио'] || r['id_сотрудника'])));
+      // Staff-дубли исполнителей скрыты (REVIEW-C1 №3).
+      Cache.forDropdown('спр_сотрудники').forEach((r) => {
+        if (uchetDup.has(r['id_сотрудника'])) return;
+        respSelect.append(
+          h('option', { value: r['id_сотрудника'] }, r['фио'] || r['id_сотрудника']));
+      });
       const workSelect = selectInput();
       fillSelect(workSelect, CONFIG.SUPERVISOR_WORKS.map((w) => ({
         value: w.key,

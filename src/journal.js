@@ -354,8 +354,13 @@ window.Journal = (() => {
   }
 
   // Патч строки файла сервиса по ключевой колонке (id_задачи и т.п.).
-  // Механика та же, что updateOperation: узкий непрерывный диапазон,
-  // чтобы не затирать соседние колонки.
+  //
+  // В отличие от updateOperation боевого (там колонки патча смежные),
+  // здесь поля патча разбросаны по строке — пишем НЕСКОЛЬКО узких
+  // диапазонов одним values.batchUpdate, только колонки патча.
+  // Промежуточные колонки не переписываются значениями на момент
+  // чтения — конкурентная правка (менеджер подтверждает, исполнитель
+  // сохраняет комментарий) не затирает чужие поля (REVIEW-C1 №5).
   async function serviceUpdate(sheetName, idField, idValue, patch) {
     const { headers, records } = await serviceRead(sheetName);
     const rec = records.find((r) => r.data[idField] === idValue);
@@ -364,19 +369,32 @@ window.Journal = (() => {
     }
     const cols = Object.keys(patch)
       .map((k) => headers.indexOf(k))
-      .filter((i) => i >= 0);
+      .filter((i) => i >= 0)
+      .sort((a, b) => a - b);
     if (!cols.length) return;
-    const min = Math.min(...cols);
-    const max = Math.max(...cols);
-    const merged = { ...rec.data, ...patch };
-    const spanValues = [];
-    for (let c = min; c <= max; c += 1) {
-      const v = merged[headers[c]];
-      spanValues.push(v !== undefined && v !== null ? v : '');
+    const data = [];
+    const flush = (start, end) => {
+      const values = [];
+      for (let c = start; c <= end; c += 1) {
+        const v = patch[headers[c]];
+        values.push(v !== undefined && v !== null ? v : '');
+      }
+      data.push({
+        range: sheetName + '!' + colLetter(start) + rec.rowNumber + ':' +
+          colLetter(end) + rec.rowNumber,
+        values: [values],
+      });
+    };
+    let runStart = cols[0];
+    let prev = cols[0];
+    for (let i = 1; i < cols.length; i += 1) {
+      if (cols[i] === prev + 1) { prev = cols[i]; continue; }
+      flush(runStart, prev);
+      runStart = cols[i];
+      prev = cols[i];
     }
-    const range = sheetName + '!' + colLetter(min) + rec.rowNumber + ':' +
-      colLetter(max) + rec.rowNumber;
-    await Sheets.updateRange(range, spanValues, CONFIG.SERVICE_SPREADSHEET_ID);
+    flush(runStart, prev);
+    await Sheets.batchUpdateValues(data, CONFIG.SERVICE_SPREADSHEET_ID);
   }
 
   // Строка в _лог_действий_сервис (§4.6). Лог пишет КАЖДУЮ смену

@@ -199,7 +199,15 @@ window.Cache = (() => {
     const contractorIds = new Set(guests.map((g) => g['id_сотрудника']));
     const executors = executorLoginOptions().filter(
       (e) => !contractorIds.has(e['id_в_учёте']));
-    return staff.concat(guests, executors);
+    // Обратный дедуп (REVIEW-C1 №3): сотрудник, заведённый исполнителем
+    // (Тамара: EMP-005 ↔ EXE-001), в списке входа показывается ОДИН раз
+    // — исполнителем: его вход и задачи живут в файле сервиса. Для
+    // выплат и отчётов staff-строка остаётся в спр_сотрудники.
+    const executorUchet = new Set(
+      executors.map((e) => e['id_в_учёте']).filter(Boolean));
+    const staffShown = staff.filter(
+      (s) => !executorUchet.has(s['id_сотрудника']));
+    return staffShown.concat(guests, executors);
   }
 
   // Запуск авто-обновления каждые 30 минут (§3.1).

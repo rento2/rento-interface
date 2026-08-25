@@ -76,6 +76,15 @@ window.Sheets = (() => {
     });
   }
 
+  // Записать несколько диапазонов одним запросом (values.batchUpdate).
+  // data — [{ range: 'лист!A2:B2', values: [[...]] }, ...].
+  async function batchUpdateValues(data, spreadsheetId) {
+    await gapi.client.sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: spreadsheetId || CONFIG.SHEETS_ID,
+      resource: { valueInputOption: 'USER_ENTERED', data },
+    });
+  }
+
   return {
     init,
     setToken,
@@ -83,6 +92,7 @@ window.Sheets = (() => {
     getValues,
     appendRow,
     updateRange,
+    batchUpdateValues,
     isReady: () => initialized,
   };
 })();
