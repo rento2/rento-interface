@@ -256,6 +256,9 @@
     // миграции TSK (TICKET-С1.0); старая остаётся достижимой на
     // переходный период.
     'доска_сервис': Forms.openДоскаСервис,
+    // Квартиры (ADR-035, С1.5): список + карточка (паспорт, опись,
+    // улучшения). Карточка открывается изнутри списка (onOpenКарточка).
+    'квартиры': Forms.openКвартиры,
   };
 
   // Формы только для основателя, которых нет в реестре операций
@@ -268,9 +271,11 @@
   // (Выплата/Batch) остаются за основателем через Operations.founderOnly.
   const FOUNDER_ONLY_FORMS = new Set();
 
-  // Что открыто ограниченной роли (подрядчик). Всё остальное — showMain.
+  // Что открыто ограниченной роли (подрядчик/исполнитель). Всё
+  // остальное — showMain. Карточки квартир видят все роли (ADR-035 п.3:
+  // инструкции уборки — для горничной).
   const RESTRICTED_ALLOWED_FORMS = new Set(
-    ['задачи_сервис', 'доска_сервис', 'помощь']);
+    ['задачи_сервис', 'доска_сервис', 'квартиры', 'помощь']);
 
   // Полноэкранный экран формы операции (ADR-006). Отмена, «← На главную»
   // и успешная отправка возвращают на главный экран через showMain.
@@ -323,6 +328,22 @@
     // корректировки. Корректировка не сидит в FORM_OPENERS
     // потому что в главное меню не выводится (§16.2: вход
     // только через «Поиск операций»).
+    // Карточка квартиры открывается изнутри списка «Квартиры»; выход из
+    // карточки — назад к списку (без стека форм, как у корректировки).
+    if (formType === 'квартиры') {
+      callbacks.onOpenКарточка = (flat) => {
+        todayCtl = null;
+        const scr = Forms.openКарточкаКвартиры({
+          employee, flat,
+          onRefresh: handleRefresh,
+          onLogout: () => { endUserSession(); showLogin(); },
+          onExit: () => showФорма('квартиры'),
+          onOpenHelp: () => showФорма('помощь'),
+        });
+        indicatorSlot = scr.indicatorSlot;
+        refreshIndicator();
+      };
+    }
     if (formType === 'поиск_операций') {
       callbacks.onOpenКорректировка = (original) => {
         todayCtl = null;
@@ -828,6 +849,73 @@
         'краткое_описание': formData.shortDesc + ' → ' + idOperation,
       });
       return { idOperation };
+    });
+
+    // --- Карточка квартиры (ADR-035, TICKET-С1.5) -----------------------
+    // Паспорт квартиры: upsert одной строки по id_объекта. Ретрай
+    // идемпотентен: existing найдётся → update теми же значениями.
+    Queue.registerSender('сервис_паспорт', async (formData) => {
+      const sheet = CONFIG.SERVICE_PASSPORT_SHEET;
+      const { headers, records } = await Journal.serviceRead(sheet);
+      const existing = records.find(
+        (r) => r.data['id_объекта'] === formData.objId);
+      if (existing) {
+        await Journal.serviceUpdate(sheet, 'id_объекта', formData.objId,
+          formData.patch);
+      } else {
+        await Journal.serviceAppend(sheet,
+          { 'id_объекта': formData.objId, ...formData.patch }, headers);
+      }
+      await Journal.serviceLog({
+        'timestamp': formData.logTimestamp,
+        'кто': formData.actorId,
+        'действие': 'изменение_паспорта',
+        'id_записи': formData.objId,
+        'краткое_описание': formData.shortDesc,
+      });
+      return {};
+    });
+
+    // Позиция описи: append с генерацией INV-id. У листа нет client_uuid
+    // (§4.3) — дедуп ретрая по содержательному ключу (объект + название +
+    // дата_добавления, зафиксированная формой при постановке в очередь).
+    Queue.registerSender('сервис_опись_добавление', async (formData) => {
+      const sheet = CONFIG.SERVICE_INVENTORY_SHEET;
+      const { headers, records } = await Journal.serviceRead(sheet);
+      const dup = records.find((r) =>
+        r.data['id_объекта'] === formData.row['id_объекта'] &&
+        r.data['название'] === formData.row['название'] &&
+        r.data['дата_добавления'] === formData.row['дата_добавления']);
+      let id;
+      if (dup) {
+        id = dup.data['id_позиции'];
+      } else {
+        id = Forms.nextRefId(records.map((r) => r.data), 'INV', 'id_позиции');
+        await Journal.serviceAppend(sheet,
+          { ...formData.row, 'id_позиции': id }, headers);
+      }
+      await Journal.serviceLog({
+        'timestamp': formData.logTimestamp,
+        'кто': formData.actorId,
+        'действие': 'изменение_описи',
+        'id_записи': id,
+        'краткое_описание': formData.shortDesc,
+      });
+      return { id };
+    });
+
+    // Правка/списание позиции описи — патч на месте (ADR-033) + лог.
+    Queue.registerSender('сервис_опись_правка', async (formData) => {
+      await Journal.serviceUpdate(CONFIG.SERVICE_INVENTORY_SHEET,
+        'id_позиции', formData.itemId, formData.patch);
+      await Journal.serviceLog({
+        'timestamp': formData.logTimestamp,
+        'кто': formData.actorId,
+        'действие': 'изменение_описи',
+        'id_записи': formData.itemId,
+        'краткое_описание': formData.shortDesc,
+      });
+      return {};
     });
 
     // Предложение новой категории (§14, TICKET-3.6). Пишет заявку в

@@ -1081,6 +1081,46 @@ body {
 .kb-filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .kb-filters .field-input { max-width: 260px; padding: 8px 10px; font-size: 13px; }
 
+/* Квартиры (ADR-035): список + карточка (паспорт/опись/улучшения). */
+.flat-list { display: flex; flex-direction: column; gap: 8px; }
+.flat-row {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 12px; padding: 12px 14px; cursor: pointer;
+  background: var(--surface-0); border-radius: 12px;
+}
+.flat-row:hover { filter: brightness(0.97); }
+.flat-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.flat-name { font-weight: 600; }
+.flat-row-side { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.flat-score { font-weight: 700; }
+.flat-card { display: flex; flex-direction: column; gap: 8px; }
+.flat-passport { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.flat-passport-row {
+  display: grid; grid-template-columns: 200px 1fr; gap: 10px;
+  font-size: 14px; align-items: baseline;
+}
+.flat-task {
+  padding: 8px 10px; background: var(--surface-0); border-radius: 10px;
+  margin-top: 6px;
+}
+.flat-task-done { opacity: 0.6; }
+.flat-task-line { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.flat-task-mark { flex-shrink: 0; }
+.flat-task-desc { flex: 1; min-width: 200px; overflow-wrap: anywhere; }
+.flat-zone { margin: 12px 0 4px; font-size: 12px; font-weight: 700;
+  letter-spacing: 0.06em; color: var(--muted, #777); }
+.flat-inv-row {
+  padding: 8px 10px; background: var(--surface-0); border-radius: 10px;
+  margin-top: 4px;
+}
+.flat-inv-line { display: flex; flex-direction: column; gap: 2px; cursor: pointer; }
+.flat-inv-name { font-weight: 600; }
+.flat-inv-gone { opacity: 0.55; }
+.flat-inv-bad { outline: 1.5px solid #d67; }
+@media (max-width: 700px) {
+  .flat-passport-row { grid-template-columns: 1fr; gap: 2px; }
+}
+
 /* Архив подтверждённых задач (ADR-034): месяцы со сводкой + строки. */
 .kb-archive { display: flex; flex-direction: column; gap: 8px; }
 .kb-archive-month { margin-top: 16px; }

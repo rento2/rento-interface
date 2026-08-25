@@ -4614,6 +4614,164 @@ window.Forms = (() => {
     });
   }
 
+  // ---------- общие хелперы сервисного блока (доска + карточка) ----------
+  // Финансовая логика подтверждения (маршрут начисления, дефолты цен)
+  // живёт здесь ОДИН раз — доска задач и карточка квартиры её делят.
+
+  function svcExecutorsById() {
+    const m = {};
+    Cache.serviceExecutors().forEach((r) => { m[r['id_исполнителя']] = r; });
+    return m;
+  }
+
+  // Актуальная версия по стабильному id справочника боевого (§3.2
+  // INTERFACE_DATA_SPEC — как это делают существующие формы).
+  function svcCurrentVersion(sheet, stableField, stableId) {
+    const row = Cache.forDropdown(sheet)
+      .find((r) => r[stableField] === stableId);
+    return row ? row['id_версии'] : '';
+  }
+
+  function svcObjectVersion(objId) {
+    if (!objId) return '';
+    const v = svcCurrentVersion('спр_объекты', 'id_объекта', objId);
+    if (v) return v;
+    // Отключённый объект не проходит фильтр активности — берём его
+    // последнюю версию: начисление по старой задаче важнее статуса.
+    const rows = Cache.get('спр_объекты')
+      .filter((r) => r['id_объекта'] === objId);
+    return rows.length ? rows[rows.length - 1]['id_версии'] : '';
+  }
+
+  // Дефолт цены задачи (§6): уборка — спр_ставки_уборок по объекту и
+  // типу на сегодня; ремонт — ставка_дефолт_₽ мастера-исполнителя;
+  // виды работ супервайзера считает вызывающая форма по
+  // CONFIG.SUPERVISOR_WORKS; сервис — вручную; закупка — цены нет.
+  function svcPriceDefault(taskType, flatId, cleaningType, executorId) {
+    if (taskType === 'уборка' && flatId && cleaningType) {
+      const date = today();
+      const matching = Cache.get('спр_ставки_уборок').filter((r) =>
+        r['id_объекта'] === flatId && r['тип_уборки'] === cleaningType &&
+        String(r['действует_с'] || '') <= date &&
+        (!String(r['действует_по'] || '').trim() || date <= r['действует_по']));
+      if (matching.length) {
+        matching.sort((a, b) =>
+          String(b['действует_с']).localeCompare(String(a['действует_с'])));
+        return num(matching[0]['сумма_₽']) || null;
+      }
+    }
+    if (taskType === 'ремонт' && executorId) {
+      const exe = svcExecutorsById()[executorId];
+      const master = exe && Cache.forDropdown('спр_мастера').find(
+        (m) => m['id_мастера'] === exe['id_в_учёте']);
+      if (master && num(master['ставка_дефолт_₽'])) {
+        return num(master['ставка_дефолт_₽']);
+      }
+    }
+    return null;
+  }
+
+  // Маршрут начисления при подтверждении задачи (§7.1–7.3): куда и какой
+  // строкой. null — начисление не создаётся (закупка §7.4, исполнитель-
+  // сотрудник, несоответствие типа и роли); { error } — должно
+  // создаться, но данных не хватает: подтверждение блокируется громко.
+  function svcAccrualRoute(data, managerId) {
+    const t = data['тип_задачи'] || 'сервис';
+    if (t === 'закупка') return null;
+    const exe = svcExecutorsById()[data['id_исполнителя']];
+    if (!exe) return null;
+    const role = String(exe['роль'] || '').trim().toLowerCase();
+    const uchet = (exe['id_в_учёте'] || '').trim();
+    const price = num(data['цена_₽']);
+    if (!(price > 0)) {
+      return { error: 'у задачи нет цены — впишите её в деталях карточки' };
+    }
+    const when = String(data['выполнена'] || '').slice(0, 10) || today();
+    const base = {
+      'дата_внесения': new Date().toISOString(),
+      'id_менеджера': managerId,
+      'статус': 'активна',
+      'комментарий': 'задача ' + data['id_задачи'],
+    };
+    if (t === 'уборка' && role === 'горничная') {
+      const ver = svcCurrentVersion('спр_горничные', 'id_горничной', uchet);
+      if (!ver) return { error: 'горничная ' + uchet + ' не найдена в спр_горничные' };
+      return { opKey: 'уборка', journal: CONFIG.JOURNAL_УБОРКИ, row: { ...base,
+        'дата_уборки': when, 'id_горничной': ver,
+        'id_объекта_версии': svcObjectVersion(data['id_объекта']),
+        'тип_уборки': data['тип_уборки'] || 'плановая', 'сумма_₽': price } };
+    }
+    if (t === 'ремонт' && role === 'техник') {
+      const ver = svcCurrentVersion('спр_мастера', 'id_мастера', uchet);
+      if (!ver) return { error: 'мастер ' + uchet + ' не найден в спр_мастера' };
+      return { opKey: 'мастер', journal: CONFIG.JOURNAL_МАСТЕР, row: { ...base,
+        'дата': when, 'id_мастера': ver,
+        'id_объекта_версии': svcObjectVersion(data['id_объекта']),
+        'тип_записи': 'выход',
+        'описание': String(data['описание'] || '').slice(0, 120),
+        'сумма_₽': price } };
+    }
+    if (role === 'супервайзер') {
+      // ADR-032: id_супервайзера — стабильный id_сотрудника, не версия.
+      if (!uchet) return { error: 'у супервайзера не заполнен id_в_учёте' };
+      const desc = (data['вид_работы'] ? data['вид_работы'] + ' — ' : '') +
+        String(data['описание'] || '').slice(0, 120);
+      return { opKey: 'супервайзер', journal: CONFIG.JOURNAL_СУПЕРВАЙЗЕР,
+        row: { ...base,
+          'дата': when, 'id_супервайзера': uchet,
+          'id_объекта_версии': svcObjectVersion(data['id_объекта']),
+          'описание': desc, 'сумма_₽': price } };
+    }
+    return null;
+  }
+
+  // Подтверждение задачи менеджером: транзакция «начисление + патч
+  // задачи» через очередь (sender 'сервис_подтверждение'), либо простая
+  // смена статуса, если начисление не положено. onDone() — перерисовка.
+  function svcConfirmTask(data, managerId, onDone) {
+    const route = svcAccrualRoute(data, managerId);
+    if (route && route.error) {
+      alert('Подтверждение невозможно: ' + route.error);
+      return;
+    }
+    const now = new Date().toISOString();
+    const patch = { 'статус': 'подтверждено', 'подтверждена': now,
+      'id_подтвердившего': managerId };
+    if (!route) {
+      if (data['тип_задачи'] !== 'закупка' &&
+          !confirm('Начисление по этой задаче не создаётся (исполнитель — ' +
+            'сотрудник, или тип задачи не совпадает с ролью). ' +
+            'Подтвердить без начисления?')) return;
+      Object.assign(data, patch);
+      Queue.add('сервис_задача_обновление', {
+        taskId: data['id_задачи'],
+        patch,
+        actorId: managerId,
+        logAction: 'смена_статуса',
+        logTimestamp: now,
+        shortDesc: 'Задача ' + data['id_задачи'] + ' → подтверждено (без начисления)',
+      });
+      onDone();
+      return;
+    }
+    Object.assign(data, patch);
+    Queue.add('сервис_подтверждение', {
+      taskId: data['id_задачи'],
+      // Идемпотентность начисления — client_uuid задачи (§7.5);
+      // у задачи без uuid ключ стабильно выводится из её id.
+      taskUuid: data['client_uuid'] || ('task-' + data['id_задачи']),
+      opKey: route.opKey,
+      journal: route.journal,
+      accrualRow: route.row,
+      patch,
+      actorId: managerId,
+      logTimestamp: now,
+      shortDesc: 'Задача ' + data['id_задачи'] + ' подтверждена, начисление ' +
+        num(data['цена_₽']) + ' ₽ (' + route.opKey + ')',
+    });
+    onDone();
+  }
+
   // ------------- Доска сервисного блока (ADR-031, TICKET-С1.2) -------------
   // Эволюция «Задач по сервису» под файл сервиса: журнал_задачи, статусы §5
   // (новая → в_работе → выполнено → подтверждено, + скрытая «отменена»),
@@ -4686,35 +4844,8 @@ window.Forms = (() => {
         });
     }
 
-    // Дефолт цены (§6): уборка — спр_ставки_уборок по объекту и типу на
-    // сегодня; ремонт — ставка_дефолт_₽ мастера-исполнителя (обычно
-    // пустая — договорная); сервис — вручную; закупка — цены нет.
-    const rates = Cache.get('спр_ставки_уборок');
-    const executorsById = {};
-    Cache.serviceExecutors().forEach((r) => { executorsById[r['id_исполнителя']] = r; });
-    function priceDefault(taskType, flatId, cleaningType, executorId) {
-      if (taskType === 'уборка' && flatId && cleaningType) {
-        const date = today();
-        const matching = rates.filter((r) =>
-          r['id_объекта'] === flatId && r['тип_уборки'] === cleaningType &&
-          String(r['действует_с'] || '') <= date &&
-          (!String(r['действует_по'] || '').trim() || date <= r['действует_по']));
-        if (matching.length) {
-          matching.sort((a, b) =>
-            String(b['действует_с']).localeCompare(String(a['действует_с'])));
-          return num(matching[0]['сумма_₽']) || null;
-        }
-      }
-      if (taskType === 'ремонт' && executorId) {
-        const exe = executorsById[executorId];
-        const master = exe && Cache.forDropdown('спр_мастера').find(
-          (m) => m['id_мастера'] === exe['id_в_учёте']);
-        if (master && num(master['ставка_дефолт_₽'])) {
-          return num(master['ставка_дефолт_₽']);
-        }
-      }
-      return null;
-    }
+    // Дефолты цен и маршруты начислений — общие хелперы svc* выше.
+    const executorsById = svcExecutorsById();
 
     const COLUMNS = [
       { status: 'новая', title: 'Новые', cls: 'kb-col-new' },
@@ -4779,115 +4910,6 @@ window.Forms = (() => {
       pushUpdate(data, patch, 'смена_статуса');
     }
 
-    // --- подтверждение с начислением (§7, TICKET-С1.3) ------------------
-
-    // Актуальная версия по стабильному id справочника боевого (§3.2
-    // INTERFACE_DATA_SPEC — как это делают существующие формы).
-    function currentVersion(sheet, stableField, stableId) {
-      const row = Cache.forDropdown(sheet)
-        .find((r) => r[stableField] === stableId);
-      return row ? row['id_версии'] : '';
-    }
-    function objectVersion(objId) {
-      if (!objId) return '';
-      const v = currentVersion('спр_объекты', 'id_объекта', objId);
-      if (v) return v;
-      // Отключённый объект не проходит фильтр активности — берём его
-      // последнюю версию: начисление по старой задаче важнее статуса.
-      const rows = Cache.get('спр_объекты')
-        .filter((r) => r['id_объекта'] === objId);
-      return rows.length ? rows[rows.length - 1]['id_версии'] : '';
-    }
-
-    // Маршрут начисления при подтверждении: куда и какой строкой (§7.1—
-    // 7.3). null — начисление не создаётся (закупка §7.4, исполнитель-
-    // сотрудник, несоответствие типа и роли); { error } — должно
-    // создаться, но данных не хватает: подтверждение блокируется громко.
-    function accrualRoute(data) {
-      const t = data['тип_задачи'] || 'сервис';
-      if (t === 'закупка') return null;
-      const exe = executorsById[data['id_исполнителя']];
-      if (!exe) return null;
-      const role = String(exe['роль'] || '').trim().toLowerCase();
-      const uchet = (exe['id_в_учёте'] || '').trim();
-      const price = num(data['цена_₽']);
-      if (!(price > 0)) {
-        return { error: 'у задачи нет цены — впишите её в деталях карточки' };
-      }
-      const when = String(data['выполнена'] || '').slice(0, 10) || today();
-      const base = {
-        'дата_внесения': new Date().toISOString(),
-        'id_менеджера': myId,
-        'статус': 'активна',
-        'комментарий': 'задача ' + data['id_задачи'],
-      };
-      if (t === 'уборка' && role === 'горничная') {
-        const ver = currentVersion('спр_горничные', 'id_горничной', uchet);
-        if (!ver) return { error: 'горничная ' + uchet + ' не найдена в спр_горничные' };
-        return { opKey: 'уборка', journal: CONFIG.JOURNAL_УБОРКИ, row: { ...base,
-          'дата_уборки': when, 'id_горничной': ver,
-          'id_объекта_версии': objectVersion(data['id_объекта']),
-          'тип_уборки': data['тип_уборки'] || 'плановая', 'сумма_₽': price } };
-      }
-      if (t === 'ремонт' && role === 'техник') {
-        const ver = currentVersion('спр_мастера', 'id_мастера', uchet);
-        if (!ver) return { error: 'мастер ' + uchet + ' не найден в спр_мастера' };
-        return { opKey: 'мастер', journal: CONFIG.JOURNAL_МАСТЕР, row: { ...base,
-          'дата': when, 'id_мастера': ver,
-          'id_объекта_версии': objectVersion(data['id_объекта']),
-          'тип_записи': 'выход',
-          'описание': String(data['описание'] || '').slice(0, 120),
-          'сумма_₽': price } };
-      }
-      if (role === 'супервайзер') {
-        // ADR-032: id_супервайзера — стабильный id_сотрудника, не версия.
-        if (!uchet) return { error: 'у супервайзера не заполнен id_в_учёте' };
-        const desc = (data['вид_работы'] ? data['вид_работы'] + ' — ' : '') +
-          String(data['описание'] || '').slice(0, 120);
-        return { opKey: 'супервайзер', journal: CONFIG.JOURNAL_СУПЕРВАЙЗЕР,
-          row: { ...base,
-            'дата': when, 'id_супервайзера': uchet,
-            'id_объекта_версии': objectVersion(data['id_объекта']),
-            'описание': desc, 'сумма_₽': price } };
-      }
-      return null;
-    }
-
-    function confirmTask(data) {
-      const route = accrualRoute(data);
-      if (route && route.error) {
-        alert('Подтверждение невозможно: ' + route.error);
-        return;
-      }
-      if (!route) {
-        if (data['тип_задачи'] !== 'закупка' &&
-            !confirm('Начисление по этой задаче не создаётся (исполнитель — ' +
-              'сотрудник, или тип задачи не совпадает с ролью). ' +
-              'Подтвердить без начисления?')) return;
-        moveTask(data, 'подтверждено');
-        return;
-      }
-      const now = new Date().toISOString();
-      const patch = { 'статус': 'подтверждено', 'подтверждена': now,
-        'id_подтвердившего': myId };
-      Object.assign(data, patch);
-      Queue.add('сервис_подтверждение', {
-        taskId: data['id_задачи'],
-        // Идемпотентность начисления — client_uuid задачи (§7.5);
-        // у задачи без uuid ключ стабильно выводится из её id.
-        taskUuid: data['client_uuid'] || ('task-' + data['id_задачи']),
-        opKey: route.opKey,
-        journal: route.journal,
-        accrualRow: route.row,
-        patch,
-        actorId: myId,
-        logTimestamp: now,
-        shortDesc: 'Задача ' + data['id_задачи'] + ' подтверждена, начисление ' +
-          num(data['цена_₽']) + ' ₽ (' + route.opKey + ')',
-      });
-      render();
-    }
-
     // ---------------- форма добавления (только менеджер) ----------------
     function addForm() {
       const typeSelect = selectInput();
@@ -4945,7 +4967,7 @@ window.Forms = (() => {
             return;
           }
         } else {
-          def = priceDefault(t, flatSelect.value, cleaningSelect.value,
+          def = svcPriceDefault(t, flatSelect.value, cleaningSelect.value,
             respSelect.value);
         }
         if (def) {
@@ -5114,8 +5136,8 @@ window.Forms = (() => {
           moves.append(mkBtn('Выполнено →', () => moveTask(data, 'выполнено')));
         }
         if (status === 'выполнено' && isManager) {
-          moves.append(mkBtn('✓ Подтвердить', () => confirmTask(data),
-            'kb-save'));
+          moves.append(mkBtn('✓ Подтвердить',
+            () => svcConfirmTask(data, myId, render), 'kb-save'));
           moves.append(mkBtn('← Вернуть', () => {
             const reason = prompt('Причина возврата (обязательно):');
             if (!reason || !reason.trim()) return;
@@ -5359,12 +5381,598 @@ window.Forms = (() => {
     });
   }
 
+  // ---------- «Квартиры»: список + карточка квартиры (TICKET-С1.5) ----------
+  // ADR-035: карточка = паспорт (спр_паспорт_квартир) + опись
+  // (спр_опись) + чек-лист улучшений (задачи квартиры). Правят паспорт
+  // и опись супервайзер/менеджеры/основатель; горничная и техник —
+  // просмотр. Задачи из карточки заводит менеджер/основатель.
+
+  function openКвартиры(opts) {
+    const employee = opts.employee;
+    const flats = Cache.getService('спр_квартиры')
+      .filter((f) => String(f['id_объекта'] || '').trim());
+    const listBox = h('div', { class: 'flat-list' });
+    const searchInput = textInput('Название или адрес…');
+    const passports = {};
+
+    function renderList() {
+      UI.clear(listBox);
+      const q = searchInput.value.trim().toLowerCase();
+      const shown = flats.filter((f) =>
+        !q || (f['название_короткое'] || '').toLowerCase().includes(q) ||
+        (f['адрес'] || '').toLowerCase().includes(q));
+      if (!shown.length) {
+        listBox.append(h('p', { class: 'muted' }, 'Ничего не найдено.'));
+        return;
+      }
+      shown.forEach((f) => {
+        const p = passports[f['id_объекта']] || {};
+        const row = h('div', { class: 'flat-row', role: 'button' },
+          h('div', { class: 'flat-row-main' },
+            h('span', { class: 'flat-name' },
+              f['название_короткое'] || f['id_объекта']),
+            h('span', { class: 'muted' }, f['адрес'] || '')),
+          h('div', { class: 'flat-row-side' },
+            p['оценка'] ? h('span', { class: 'flat-score' }, '★ ' + p['оценка']) : '',
+            h('span', { class: 'muted' }, f['статус'] || '')));
+        row.addEventListener('click', () => opts.onOpenКарточка(f));
+        listBox.append(row);
+      });
+    }
+    renderList();
+    searchInput.addEventListener('input', renderList);
+    // Оценки — из паспортов, подгружаются фоном.
+    Journal.serviceRead(CONFIG.SERVICE_PASSPORT_SHEET).then((res) => {
+      res.records.forEach((r) => { passports[r.data['id_объекта']] = r.data; });
+      renderList();
+    }).catch((err) => console.warn('Паспорта квартир:', err));
+
+    const form = h('form', { class: 'op-form' },
+      field('Поиск', searchInput),
+      h('div', { class: 'op-divider' }),
+      listBox);
+    form.addEventListener('submit', (e) => e.preventDefault());
+
+    return Screens.formScreen({
+      employee, title: 'Квартиры',
+      subtitle: 'Карточка квартиры: паспорт, опись, улучшения.',
+      breadcrumb: 'Сервис',
+      content: form,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
+  function openКарточкаКвартиры(opts) {
+    const employee = opts.employee;
+    const flat = opts.flat;
+    const flatId = flat['id_объекта'];
+    const myId = employee['id_сотрудника'];
+    const executor = !!employee['_исполнитель'];
+    const isManager = !executor;
+    const role = String(employee['роль'] || '').trim().toLowerCase();
+    // Паспорт и опись правят супервайзер + штатные (§3); задачи из
+    // карточки заводит менеджер/основатель (супервайзер — через обход, С2).
+    const canEdit = isManager || role === 'супервайзер';
+
+    const PASSPORT_FIELDS = [
+      ['ключей_всего', 'Ключей всего'],
+      ['ключи_где', 'Где ключи'],
+      ['код_подъезда', 'Код подъезда'],
+      ['код_замка', 'Код замка/сейфа'],
+      ['прочие_доступы', 'Прочие доступы'],
+      ['как_убирать', 'Как убирать'],
+      ['на_что_смотреть', 'На что обращать внимание'],
+    ];
+    const ZONES = ['кухня', 'комната', 'санузел', 'прихожая', 'балкон', 'прочее'];
+    const CATS = ['мебель', 'техника', 'посуда', 'текстиль', 'расходники', 'прочее'];
+    const STATES = ['новое', 'хорошее', 'удовлетворительное', 'требует замены'];
+
+    let passport = {};
+    let inventory = [];
+    let tasks = [];
+    const executorsById = svcExecutorsById();
+    const personName = {};
+    Cache.serviceExecutors().forEach((r) => {
+      personName[r['id_исполнителя']] = r['фио'] || r['id_исполнителя'];
+    });
+    Cache.forDropdown('спр_сотрудники').forEach((r) => {
+      personName[r['id_сотрудника']] = r['фио'] || r['id_сотрудника'];
+    });
+
+    const headBox = h('div');
+    const passportBox = h('div');
+    const tasksBox = h('div');
+    const invBox = h('div');
+    const content = h('div', { class: 'flat-card' },
+      headBox, passportBox, tasksBox, invBox);
+
+    function logStamp() { return new Date().toISOString(); }
+
+    // ------------------------------ шапка -------------------------------
+    function renderHead() {
+      UI.clear(headBox);
+      const act = inventory.filter((i) => String(i['статус'] || 'актуальна') !== 'выбыла');
+      const bad = act.filter((i) => i['состояние'] === 'требует замены').length;
+      const rento = act.filter((i) => i['принадлежность'] === 'Ренто').length;
+      headBox.append(
+        h('div', { class: 'greet-row' },
+          h('h1', { class: 'h1' }, flat['название_короткое'] || flatId),
+          passport['оценка']
+            ? h('span', { class: 'role-chip' }, '★ ' + passport['оценка']) : ''),
+        h('p', { class: 'muted' },
+          (flat['адрес'] || '') + ' · ' + (flat['статус'] || '') + ' · ' +
+          'позиций: ' + act.length + ' (Ренто ' + rento + ') · ' +
+          'требует замены: ' + bad));
+    }
+
+    // ----------------------------- паспорт ------------------------------
+    function renderPassport() {
+      UI.clear(passportBox);
+      const sec = h('section', { class: 'section' },
+        h('div', { class: 'section-head' },
+          h('span', { class: 'eyebrow' }, 'ПАСПОРТ'),
+          h('h2', { class: 'h2' }, 'Доступы и инструкции')));
+      const view = h('div', { class: 'flat-passport' });
+      let empty = true;
+      PASSPORT_FIELDS.forEach(([key, label]) => {
+        const v = String(passport[key] || '').trim();
+        if (!v) return;
+        empty = false;
+        view.append(h('div', { class: 'flat-passport-row' },
+          h('span', { class: 'muted' }, label), h('span', {}, v)));
+      });
+      if (passport['оценка']) {
+        empty = false;
+        view.append(h('div', { class: 'flat-passport-row' },
+          h('span', { class: 'muted' }, 'Оценка'),
+          h('span', {}, '★ ' + passport['оценка'] +
+            (passport['оценка_комментарий'] ? ' — ' + passport['оценка_комментарий'] : '') +
+            (passport['оценка_когда']
+              ? ' (' + String(passport['оценка_когда']).slice(0, 10) + ')' : ''))));
+      }
+      if (empty) view.append(h('p', { class: 'muted' }, 'Паспорт пока не заполнен.'));
+      sec.append(view);
+
+      if (canEdit) {
+        const editBtn = h('button', { class: 'kb-move-btn', type: 'button' },
+          '✎ Изменить паспорт');
+        const editArea = h('div', { class: 'kb-details', style: 'display:none' });
+        const inputs = {};
+        PASSPORT_FIELDS.forEach(([key, label]) => {
+          const inp = key === 'как_убирать' || key === 'на_что_смотреть'
+            ? textarea(label) : textInput(label);
+          inp.value = passport[key] || '';
+          inputs[key] = inp;
+          editArea.append(field(label, inp));
+        });
+        const scoreSelect = selectInput();
+        fillSelect(scoreSelect, ['1', '2', '3', '4', '5'].map(
+          (v) => ({ value: v, text: '★ ' + v })), 'Оценка…');
+        scoreSelect.value = passport['оценка'] || '';
+        const scoreComment = textInput('Комментарий к оценке');
+        scoreComment.value = passport['оценка_комментарий'] || '';
+        editArea.append(field('Оценка квартиры', scoreSelect),
+          field('Комментарий', scoreComment));
+        const saveBtn = h('button', { class: 'kb-move-btn kb-save', type: 'button' },
+          'Сохранить паспорт');
+        saveBtn.addEventListener('click', () => {
+          const patch = { 'обновлено_кем': myId, 'обновлено_когда': logStamp() };
+          PASSPORT_FIELDS.forEach(([key]) => { patch[key] = inputs[key].value.trim(); });
+          if (scoreSelect.value !== String(passport['оценка'] || '') ||
+              scoreComment.value.trim() !== String(passport['оценка_комментарий'] || '')) {
+            patch['оценка'] = scoreSelect.value;
+            patch['оценка_комментарий'] = scoreComment.value.trim();
+            patch['оценка_кем'] = myId;
+            patch['оценка_когда'] = logStamp();
+          }
+          Object.assign(passport, patch);
+          Queue.add('сервис_паспорт', {
+            objId: flatId, patch, actorId: myId, logTimestamp: logStamp(),
+            shortDesc: 'Паспорт квартиры ' + flatId + ' обновлён',
+          });
+          renderHead(); renderPassport();
+        });
+        editArea.append(saveBtn);
+        editBtn.addEventListener('click', () => {
+          editArea.style.display = editArea.style.display === 'none' ? '' : 'none';
+        });
+        sec.append(editBtn, editArea);
+      }
+      passportBox.append(sec);
+    }
+
+    // ------------------------ улучшения (задачи) ------------------------
+    function taskPatch(data, patch, logAction, shortDesc) {
+      Object.assign(data, patch);
+      Queue.add('сервис_задача_обновление', {
+        taskId: data['id_задачи'], patch, actorId: myId,
+        logAction, logTimestamp: logStamp(),
+        shortDesc: shortDesc ||
+          ('Задача ' + data['id_задачи'] + ' → ' + (patch['статус'] || 'правка')),
+      });
+      renderTasks();
+    }
+    function moveTo(data, to, extra) {
+      const patch = { 'статус': to, ...(extra || {}) };
+      const now = logStamp();
+      if (to === 'в_работе') patch['взята_в_работу'] = now;
+      if (to === 'выполнено') patch['выполнена'] = now;
+      taskPatch(data, patch, 'смена_статуса');
+    }
+
+    function taskRow(data) {
+      const status = String(data['статус'] || 'новая').trim();
+      const donePart = status === 'подтверждено';
+      const mark = donePart ? '☑' : (status === 'выполнено' ? '⏳'
+        : (status === 'в_работе' ? '◐' : '☐'));
+      const mine = data['id_исполнителя'] === myId;
+      const movable = isManager || mine;
+      const btns = h('div', { class: 'kb-moves' });
+      const mk = (label, fn, cls) => {
+        const btn = h('button',
+          { class: 'kb-move-btn' + (cls ? ' ' + cls : ''), type: 'button' }, label);
+        btn.addEventListener('click', fn);
+        return btn;
+      };
+      if (!data._pending && !donePart) {
+        if (status === 'новая' && movable) {
+          btns.append(mk('в работу →', () => moveTo(data, 'в_работе')));
+        }
+        if (status === 'в_работе' && movable) {
+          btns.append(mk('выполнено →', () => moveTo(data, 'выполнено')));
+        }
+        if (status === 'выполнено' && isManager) {
+          btns.append(mk('✓ подтвердить',
+            () => svcConfirmTask(data, myId, renderTasks), 'kb-save'));
+          btns.append(mk('← вернуть', () => {
+            const reason = prompt('Причина возврата (обязательно):');
+            if (!reason || !reason.trim()) return;
+            moveTo(data, 'в_работе', { 'причина_возврата': reason.trim() });
+          }));
+        }
+      }
+      const who = personName[data['id_исполнителя']] ||
+        data['id_исполнителя'] || 'не назначен';
+      const bits = [data['тип_задачи'] || 'сервис'];
+      if (data['вид_работы']) bits.push(data['вид_работы']);
+      bits.push(who);
+      if (data['цена_₽']) bits.push(data['цена_₽'] + ' ₽');
+      if (data['ориентировочный_бюджет_₽']) bits.push('~' + data['ориентировочный_бюджет_₽'] + ' ₽');
+      return h('div', { class: 'flat-task' + (donePart ? ' flat-task-done' : '') },
+        h('div', { class: 'flat-task-line' },
+          h('span', { class: 'flat-task-mark' }, mark),
+          h('span', { class: 'flat-task-desc' },
+            (data['описание'] || '') + (data._pending ? ' (отправляется…)' : '')),
+          h('span', { class: 'muted' }, bits.join(' · '))),
+        btns);
+    }
+
+    // Мини-форма «+ пункт» — задача с предзаполненной квартирой.
+    function addTaskForm() {
+      const typeSelect = selectInput();
+      fillSelect(typeSelect, CONFIG.SERVICE_TASK_TYPES.map(
+        (t) => ({ value: t, text: t })), 'Тип…');
+      const cleaningSelect = selectInput();
+      fillSelect(cleaningSelect, [
+        { value: 'плановая', text: 'плановая' },
+        { value: 'генеральная', text: 'генеральная' }], 'Тип уборки…');
+      cleaningSelect.style.display = 'none';
+      const respSelect = selectInput();
+      respSelect.append(h('option', { value: '' }, '— исполнитель —'));
+      Cache.serviceExecutors().forEach((r) => respSelect.append(
+        h('option', { value: r['id_исполнителя'] },
+          (r['фио'] || r['id_исполнителя']) + ' — ' + (r['роль'] || ''))));
+      Cache.forDropdown('спр_сотрудники').forEach((r) => respSelect.append(
+        h('option', { value: r['id_сотрудника'] }, r['фио'] || r['id_сотрудника'])));
+      const workSelect = selectInput();
+      fillSelect(workSelect, CONFIG.SUPERVISOR_WORKS.map((w) => ({
+        value: w.key,
+        text: w.label + (w.price ? ' — ' + w.price + ' ₽' : ''),
+      })), 'Вид работы…');
+      workSelect.style.display = 'none';
+      const descInput = textInput('Что улучшить / сделать');
+      const priceInput = numberInput();
+      priceInput.placeholder = 'Цена ₽';
+      const priceHint = h('div', { class: 'field-hint' });
+      const err = h('div', { class: 'field-error', style: 'display:none' });
+      const addBtn = h('button', { class: 'kb-move-btn kb-save', type: 'button' },
+        '+ Пункт');
+
+      const isSup = () => {
+        const exe = executorsById[respSelect.value];
+        return !!exe && String(exe['роль']).trim() === 'супервайзер';
+      };
+      function recompute() {
+        const t = typeSelect.value;
+        cleaningSelect.style.display = t === 'уборка' ? '' : 'none';
+        workSelect.style.display = (t === 'сервис' && isSup()) ? '' : 'none';
+        priceInput.placeholder = t === 'закупка' ? 'Ориент. бюджет ₽' : 'Цена ₽';
+        let def = null;
+        if (t === 'сервис' && isSup() && workSelect.value) {
+          const w = CONFIG.SUPERVISOR_WORKS.find((x) => x.key === workSelect.value);
+          def = (w && w.price) || null;
+          if (!def) { priceInput.value = ''; priceHint.textContent = 'цена по согласованию'; return; }
+        } else {
+          def = svcPriceDefault(t, flatId, cleaningSelect.value, respSelect.value);
+        }
+        if (def) {
+          priceInput.value = def;
+          priceHint.textContent = 'дефолт: ' + def + ' ₽ — можно перебить';
+        } else {
+          priceHint.textContent = '';
+        }
+      }
+      [typeSelect, cleaningSelect, respSelect, workSelect].forEach(
+        (el) => el.addEventListener('change', recompute));
+
+      addBtn.addEventListener('click', () => {
+        const t = typeSelect.value;
+        const desc = descInput.value.trim();
+        const supService = t === 'сервис' && isSup();
+        if (!t || !desc || !respSelect.value ||
+            (t === 'уборка' && !cleaningSelect.value) ||
+            (supService && !workSelect.value)) {
+          err.textContent = !t ? 'Выберите тип' : (!desc ? 'Опишите пункт'
+            : (!respSelect.value ? 'Назначьте исполнителя'
+              : (supService ? 'Выберите вид работы' : 'Выберите тип уборки')));
+          err.style.display = '';
+          return;
+        }
+        err.style.display = 'none';
+        const work = supService
+          ? CONFIG.SUPERVISOR_WORKS.find((x) => x.key === workSelect.value) : null;
+        const row = {
+          'дата_внесения': logStamp(),
+          'id_создателя': myId,
+          'тип_задачи': t,
+          'тип_уборки': t === 'уборка' ? cleaningSelect.value : '',
+          'вид_работы': work ? work.label : '',
+          'источник': 'менеджер',
+          'id_объекта': flatId,
+          'описание': desc,
+          'id_исполнителя': respSelect.value,
+          'цена_₽': t === 'закупка' ? '' : (num(priceInput.value) || ''),
+          'ориентировочный_бюджет_₽':
+            t === 'закупка' ? (num(priceInput.value) || '') : '',
+          'статус': 'новая',
+        };
+        Queue.add('сервис_задача', {
+          row, actorId: myId, logTimestamp: logStamp(),
+          shortDesc: 'Задача (' + t + '): ' +
+            (flat['название_короткое'] || flatId) + ' — ' + desc.slice(0, 80),
+        });
+        tasks.push({ ...row, 'id_задачи': '', _pending: true });
+        typeSelect.value = ''; descInput.value = ''; respSelect.value = '';
+        priceInput.value = '';
+        recompute(); renderTasks();
+      });
+
+      return h('div', { class: 'kb-add' },
+        typeSelect, cleaningSelect, respSelect, workSelect, descInput,
+        priceInput, priceHint, err, addBtn);
+    }
+
+    function renderTasks() {
+      UI.clear(tasksBox);
+      const mineOnly = (d) => !executor || d['id_исполнителя'] === myId;
+      const open = tasks.filter((d) =>
+        !['подтверждено', 'отменена'].includes(String(d['статус'] || 'новая')) &&
+        mineOnly(d));
+      const done = tasks.filter((d) => String(d['статус']) === 'подтверждено' && mineOnly(d))
+        .sort((a, b) => String(b['подтверждена'] || '').localeCompare(
+          String(a['подтверждена'] || ''))).slice(0, 5);
+      const sec = h('section', { class: 'section' },
+        h('div', { class: 'section-head' },
+          h('span', { class: 'eyebrow' }, 'УЛУЧШЕНИЯ'),
+          h('h2', { class: 'h2' },
+            'Задачи квартиры' + (open.length ? ' — ' + open.length : ''))));
+      if (isManager) sec.append(addTaskForm());
+      if (!open.length && !done.length) {
+        sec.append(h('p', { class: 'muted' }, 'Открытых задач нет.'));
+      }
+      open.forEach((d) => sec.append(taskRow(d)));
+      if (done.length) {
+        sec.append(h('p', { class: 'muted' }, 'Недавно сделано:'));
+        done.forEach((d) => sec.append(taskRow(d)));
+      }
+      tasksBox.append(sec);
+    }
+
+    // ------------------------------ опись -------------------------------
+    function invPatch(data, patch, shortDesc) {
+      Object.assign(data, patch);
+      Queue.add('сервис_опись_правка', {
+        itemId: data['id_позиции'], patch, actorId: myId,
+        logTimestamp: logStamp(), shortDesc,
+      });
+      renderHead(); renderInventory();
+    }
+
+    function invRow(data) {
+      const gone = String(data['статус'] || 'актуальна') === 'выбыла';
+      const line = h('div', { class: 'flat-inv-line' },
+        h('span', { class: 'flat-inv-name' },
+          (data['название'] || '—') +
+          (num(data['количество']) > 1 ? ' × ' + data['количество'] : '')),
+        h('span', { class: 'muted' },
+          [data['категория'], data['состояние'], data['принадлежность'],
+            data['примечание']].filter(Boolean).join(' · ') +
+          (gone ? ' · ВЫБЫЛА ' + String(data['выбыла_когда'] || '').slice(0, 10) : '')));
+      const rowEl = h('div', {
+        class: 'flat-inv-row' + (gone ? ' flat-inv-gone' : '') +
+          (data['состояние'] === 'требует замены' && !gone ? ' flat-inv-bad' : ''),
+      }, line);
+      if (canEdit && !gone && !data._pending) {
+        const details = h('div', { class: 'kb-details', style: 'display:none' });
+        const qtyInput = numberInput();
+        qtyInput.value = data['количество'] || 1;
+        const stateSelect = selectInput();
+        fillSelect(stateSelect, STATES.map((s) => ({ value: s, text: s })));
+        stateSelect.value = data['состояние'] || '';
+        const noteInput = textInput('Примечание');
+        noteInput.value = data['примечание'] || '';
+        const saveBtn = h('button', { class: 'kb-move-btn kb-save', type: 'button' },
+          'Сохранить');
+        saveBtn.addEventListener('click', () => invPatch(data, {
+          'количество': num(qtyInput.value) || 1,
+          'состояние': stateSelect.value,
+          'примечание': noteInput.value.trim(),
+        }, 'Опись ' + flatId + ': ' + (data['название'] || data['id_позиции']) +
+          ' — правка'));
+        const dropBtn = h('button', { class: 'kb-move-btn', type: 'button' }, '✕ Списать');
+        dropBtn.addEventListener('click', () => {
+          if (!confirm('Списать «' + (data['название'] || '') + '»? Строка ' +
+            'останется в истории со статусом «выбыла».')) return;
+          invPatch(data, {
+            'статус': 'выбыла', 'выбыла_когда': logStamp(), 'выбыла_кем': myId,
+          }, 'Опись ' + flatId + ': ' + (data['название'] || data['id_позиции']) +
+            ' — списана');
+          details.style.display = 'none';
+        });
+        details.append(field('Количество', qtyInput), field('Состояние', stateSelect),
+          field('Примечание', noteInput),
+          h('div', { class: 'kb-moves' }, saveBtn, dropBtn));
+        line.addEventListener('click', () => {
+          details.style.display = details.style.display === 'none' ? '' : 'none';
+        });
+        rowEl.append(details);
+      }
+      return rowEl;
+    }
+
+    function addInvForm() {
+      const zoneSelect = selectInput();
+      fillSelect(zoneSelect, ZONES.map((z) => ({ value: z, text: z })), 'Зона…');
+      const catSelect = selectInput();
+      fillSelect(catSelect, CATS.map((c) => ({ value: c, text: c })), 'Категория…');
+      const nameInput = textInput('Название («Холодильник Bosch», «Комплект белья»)');
+      const qtyInput = numberInput();
+      qtyInput.placeholder = 'Кол-во';
+      const stateSelect = selectInput();
+      fillSelect(stateSelect, STATES.map((s) => ({ value: s, text: s })), 'Состояние…');
+      const ownSelect = selectInput();
+      fillSelect(ownSelect, [
+        { value: 'собственник', text: 'собственник' },
+        { value: 'Ренто', text: 'Ренто' }], 'Чьё…');
+      const noteInput = textInput('Примечание (серийник, дефекты)');
+      const err = h('div', { class: 'field-error', style: 'display:none' });
+      const addBtn = h('button', { class: 'kb-move-btn kb-save', type: 'button' },
+        '+ Позиция');
+      addBtn.addEventListener('click', () => {
+        if (!zoneSelect.value || !catSelect.value || !nameInput.value.trim() ||
+            !stateSelect.value || !ownSelect.value) {
+          err.textContent = 'Заполните зону, категорию, название, состояние и принадлежность.';
+          err.style.display = '';
+          return;
+        }
+        err.style.display = 'none';
+        const row = {
+          'id_объекта': flatId,
+          'зона': zoneSelect.value,
+          'категория': catSelect.value,
+          'название': nameInput.value.trim(),
+          'количество': num(qtyInput.value) || 1,
+          'состояние': stateSelect.value,
+          'принадлежность': ownSelect.value,
+          'примечание': noteInput.value.trim(),
+          'добавил': myId,
+          'дата_добавления': logStamp(),
+          'статус': 'актуальна',
+        };
+        Queue.add('сервис_опись_добавление', {
+          row, actorId: myId, logTimestamp: logStamp(),
+          shortDesc: 'Опись ' + flatId + ': + ' + row['название'],
+        });
+        inventory.push({ ...row, 'id_позиции': '', _pending: true });
+        nameInput.value = ''; qtyInput.value = ''; noteInput.value = '';
+        renderHead(); renderInventory();
+      });
+      return h('div', { class: 'kb-add' },
+        zoneSelect, catSelect, nameInput, qtyInput, stateSelect, ownSelect,
+        noteInput, err, addBtn);
+    }
+
+    let showGone = false;
+    function renderInventory() {
+      UI.clear(invBox);
+      const sec = h('section', { class: 'section' },
+        h('div', { class: 'section-head' },
+          h('span', { class: 'eyebrow' }, 'ОПИСЬ'),
+          h('h2', { class: 'h2' }, 'Имущество')));
+      if (canEdit) sec.append(addInvForm());
+      const mine = inventory.filter((i) => i['id_объекта'] === flatId);
+      const actual = mine.filter((i) => String(i['статус'] || 'актуальна') !== 'выбыла');
+      const gone = mine.filter((i) => String(i['статус']) === 'выбыла');
+      if (!actual.length) sec.append(h('p', { class: 'muted' }, 'Опись пуста.'));
+      ZONES.forEach((z) => {
+        const items = actual.filter((i) => (i['зона'] || 'прочее') === z);
+        if (!items.length) return;
+        sec.append(h('p', { class: 'flat-zone' }, z.toUpperCase()));
+        items.forEach((i) => sec.append(invRow(i)));
+      });
+      if (gone.length) {
+        const link = h('button', { class: 'link-btn', type: 'button' },
+          (showGone ? 'скрыть выбывшие' : 'выбывшие: ' + gone.length));
+        link.addEventListener('click', () => { showGone = !showGone; renderInventory(); });
+        sec.append(link);
+        if (showGone) gone.forEach((i) => sec.append(invRow(i)));
+      }
+      invBox.append(sec);
+    }
+
+    // ----------------------------- загрузка -----------------------------
+    async function load() {
+      UI.clear(headBox);
+      headBox.append(h('p', { class: 'muted' }, 'Загружаем карточку…'));
+      try {
+        const [pas, inv, tsk] = await Promise.all([
+          Journal.serviceRead(CONFIG.SERVICE_PASSPORT_SHEET),
+          Journal.serviceRead(CONFIG.SERVICE_INVENTORY_SHEET),
+          Journal.serviceRead(CONFIG.SERVICE_TASKS_SHEET),
+        ]);
+        const pRec = pas.records.find((r) => r.data['id_объекта'] === flatId);
+        passport = pRec ? pRec.data : {};
+        inventory = inv.records.map((r) => r.data)
+          .filter((d) => d['id_объекта'] === flatId);
+        tasks = tsk.records.map((r) => r.data)
+          .filter((d) => d['id_объекта'] === flatId &&
+            String(d['id_задачи'] || '').trim());
+      } catch (err) {
+        console.error('Карточка квартиры:', err);
+        UI.clear(headBox);
+        headBox.append(h('p', { class: 'error-banner' },
+          'Не удалось загрузить карточку: ' + ((err && err.message) || 'ошибка') + '.'));
+        return;
+      }
+      renderHead(); renderPassport(); renderTasks(); renderInventory();
+    }
+    load();
+    Queue.onCommitted((item) => {
+      if (item && ['сервис_задача', 'сервис_опись_добавление']
+        .includes(item.formType) && document.body.contains(content)) load();
+    });
+
+    return Screens.formScreen({
+      employee,
+      title: flat['название_короткое'] || flatId,
+      subtitle: 'Паспорт · опись · улучшения',
+      breadcrumb: 'Сервис › Квартиры',
+      content,
+      onBack: () => opts.onExit(),
+      onRefresh: opts.onRefresh, onLogout: opts.onLogout,
+      onOpenHelp: opts.onOpenHelp,
+    });
+  }
+
   return {
     openУборка, openМастер, openХозРасход, openПрочее, openBatch, openВыплата,
     openЗаселение, openОтчётСобственнику, openОтчётСотрудники,
     openПоискОпераций, openКорректировка,
     openЗадачиСервис,
     openДоскаСервис,
+    openКвартиры, openКарточкаКвартиры,
     openПомощь,
     openНовыйСобственник, openНоваяКвартира, openНовыйСотрудник, openНоваяГорничная,
     openНовыйРеквизитСобственника,
