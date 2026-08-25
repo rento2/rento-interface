@@ -33,9 +33,11 @@ window.Sheets = (() => {
   // Единый batch-запрос к нескольким листам.
   // ranges — массив имён листов (имя листа = весь лист как range).
   // Кириллические имена кодируются библиотекой автоматически.
-  async function batchGet(ranges) {
+  // spreadsheetId — опционально: по умолчанию боевой файл; файл сервиса
+  // (ADR-031) передаёт CONFIG.SERVICE_SPREADSHEET_ID.
+  async function batchGet(ranges, spreadsheetId) {
     const response = await gapi.client.sheets.spreadsheets.values.batchGet({
-      spreadsheetId: CONFIG.SHEETS_ID,
+      spreadsheetId: spreadsheetId || CONFIG.SHEETS_ID,
       ranges,
     });
     return response.result.valueRanges || [];

@@ -60,7 +60,16 @@
   // увидит все листы. Решение фаундера принято осознанно.
   function isRestrictedRole(role) {
     const r = String(role || '').trim().toLowerCase();
-    return r === 'мастер' || r === 'горничная' || r === 'подрядчик';
+    // техник/супервайзер — роли исполнителей файла сервиса (ADR-031,
+    // SERVICE_SPEC §3); горничная встречается в обеих моделях.
+    return r === 'мастер' || r === 'горничная' || r === 'подрядчик' ||
+      r === 'техник' || r === 'супервайзер';
+  }
+
+  // Исполнитель файла сервиса (ADR-031): вошёл по спр_исполнители,
+  // а не по справочникам боевого. Флаг ставит Cache.executorLoginOptions.
+  function isExecutor(employee) {
+    return !!(employee && employee['_исполнитель']);
   }
 
   // Текущий сотрудник из кеша по стабильному id_сотрудника (ADR-005).
@@ -160,6 +169,12 @@
       employees: Cache.activeEmployees(),
       storedUserId: localStorage.getItem(USER_KEY),
       errorText,
+      // Режим исполнителя: пустой список — это пустой спр_исполнители
+      // файла сервиса, а не спр_сотрудники боевого.
+      emptyText: Cache.isServiceOnly()
+        ? 'В спр_исполнители файла сервиса нет активных записей. ' +
+          'Попросите менеджера занести вас и обновите страницу.'
+        : null,
       onSubmit: (userId) => {
         if (!userId) return 'Выберите, кто вы.';
         localStorage.setItem(USER_KEY, userId);
@@ -187,6 +202,9 @@
       employee,
       isFounder: founder,
       isRestricted: restricted,
+      // Исполнителю (EXE-*) старая доска задач боевого файла недоступна
+      // и не нужна; его доска — из файла сервиса, появится в С1.2.
+      isExecutor: isExecutor(employee),
       onOpenForm: showФорма,
       onRefresh: handleRefresh,
       onLogout: () => { endUserSession(); showLogin(); },
@@ -274,6 +292,13 @@
     // showФорма мог бы прийти в обход (сохранённая ссылка, отладка).
     if (isRestrictedRole(employee['роль']) &&
         !RESTRICTED_ALLOWED_FORMS.has(formType)) {
+      showMain();
+      return;
+    }
+    // Исполнителю файла сервиса (EXE-*) старая доска недоступна: она
+    // читает журнал_задачи_сервис боевого файла, к которому у него нет
+    // доступа (ADR-031). Его доска — С1.2; до неё открыта только помощь.
+    if (isExecutor(employee) && formType === 'задачи_сервис') {
       showMain();
       return;
     }
@@ -758,6 +783,7 @@
   async function startSession(token) {
     Sheets.setToken(token.access_token);
     try {
+      Cache.setServiceOnly(false);
       await Cache.refresh();
       Cache.startAutoRefresh(handleSheetsError);
       Queue.start();
@@ -775,6 +801,31 @@
         showLogin();
       }
     } catch (err) {
+      // 403 от боевого файла — возможно, это исполнитель сервисного
+      // блока (ADR-031): у него Editor только на файл сервиса. Пробуем
+      // режим serviceOnly; если файл сервиса читается — обычный вход,
+      // список — из спр_исполнители. Очередь отправки НЕ стартуем: все
+      // её отправители пишут в боевой файл (доска исполнителя — С1.2).
+      if (describeSheetsError(err).code === 403) {
+        try {
+          Cache.setServiceOnly(true);
+          await Cache.refresh();
+          Cache.startAutoRefresh(handleSheetsError);
+          scheduleTokenRefresh();
+          if (sessionValid() && currentEmployee()) {
+            showMain();
+          } else {
+            if (!sessionValid()) endUserSession();
+            showLogin();
+          }
+          return;
+        } catch (serviceErr) {
+          Cache.setServiceOnly(false);
+          console.warn('Файл сервиса тоже недоступен:', serviceErr);
+          // Ни боевой, ни сервисный не читаются — это настоящий отказ
+          // в доступе, показываем исходную 403-ошибку ниже.
+        }
+      }
       if (handleSheetsError(err)) return;
       console.error('Загрузка справочников:', err);
       showConnect('Не удалось загрузить справочники: ' +

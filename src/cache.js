@@ -15,6 +15,14 @@ window.Cache = (() => {
 
   // sheetName -> массив строк-объектов { заголовок: значение }
   let data = {};
+  // Справочники файла сервиса (ADR-031) — отдельный словарь: имена
+  // листов двух файлов не должны молча перемешиваться.
+  let serviceData = {};
+  // Режим исполнителя (SERVICE_SPEC §2.4): у горничной/техника/
+  // супервайзера нет доступа к боевому файлу — refresh() читает только
+  // файл сервиса. Включает app.js, когда боевой batchGet вернул 403,
+  // а сервисный прошёл.
+  let serviceOnly = false;
   let lastUpdated = null;
   let refreshTimer = null;
   const listeners = [];
@@ -69,8 +77,28 @@ window.Cache = (() => {
     return !String(row['действует_по']).trim();
   }
 
-  // Полный batch-запрос всех справочников.
+  // Справочники файла сервиса вторым batchGet (ADR-031, TICKET-С1.1).
+  async function refreshService() {
+    const sheets = CONFIG.SERVICE_REFERENCE_SHEETS;
+    const valueRanges = await Sheets.batchGet(sheets, CONFIG.SERVICE_SPREADSHEET_ID);
+    const next = {};
+    sheets.forEach((name, i) => {
+      const vr = valueRanges[i];
+      next[name] = rowsToObjects(vr && vr.values);
+    });
+    serviceData = next;
+  }
+
+  // Полный batch-запрос всех справочников. В режиме исполнителя
+  // (serviceOnly) боевой файл не читается вообще — только файл сервиса;
+  // кнопка «Обновить справочники» и авто-таймер работают без изменений.
   async function refresh() {
+    if (serviceOnly) {
+      await refreshService();
+      lastUpdated = new Date();
+      listeners.forEach((fn) => fn());
+      return;
+    }
     const sheets = CONFIG.REFERENCE_SHEETS;
     const valueRanges = await Sheets.batchGet(sheets);
     const next = {};
@@ -81,12 +109,31 @@ window.Cache = (() => {
     });
     data = next;
     lastUpdated = new Date();
+    // Файл сервиса для менеджера — вспомогательный: если он не
+    // расшарен или недоступен, интерфейс учёта работает как раньше.
+    // Громко в консоль, но сессию не валим.
+    try {
+      await refreshService();
+    } catch (err) {
+      serviceData = {};
+      console.warn('Справочники файла сервиса недоступны:', err);
+    }
     listeners.forEach((fn) => fn());
   }
 
   // Все строки листа (без фильтров).
   function get(sheet) {
     return data[sheet] || [];
+  }
+
+  // Строки листа файла сервиса (ADR-031).
+  function getService(sheet) {
+    return serviceData[sheet] || [];
+  }
+
+  // Активные исполнители из спр_исполнители файла сервиса (§2.4).
+  function serviceExecutors() {
+    return getService('спр_исполнители').filter(isActiveRow);
   }
 
   // Строки листа, готовые для выпадашки: активные + актуальная версия.
@@ -104,7 +151,27 @@ window.Cache = (() => {
   //
   // Роль синтезируем («мастер»/«горничная») — по ней app.js решает, что
   // показывать. Форма объекта та же, что у сотрудника: id_сотрудника/фио/роль.
+  // Исполнители файла сервиса как варианты входа (SERVICE_SPEC §2.4).
+  // Форма объекта та же, что у сотрудника; роль из спр_исполнители
+  // (горничная/техник/супервайзер) решает набор экранов в app.js.
+  // id_в_учёте сохраняем: по нему дедуп с подрядчиками ADR-028 и
+  // (с С1.3) резолв версии для начисления.
+  function executorLoginOptions() {
+    return serviceExecutors().map((r) => ({
+      'id_сотрудника': r['id_исполнителя'],
+      'фио': r['фио'] || r['id_исполнителя'],
+      'роль': r['роль'],
+      'статус': 'активный',
+      'id_в_учёте': r['id_в_учёте'] || '',
+      '_исполнитель': true,
+    }));
+  }
+
   function activeEmployees() {
+    // Режим исполнителя: боевого файла нет, список входа — только
+    // спр_исполнители файла сервиса.
+    if (serviceOnly) return executorLoginOptions();
+
     const staff = forDropdown('спр_сотрудники');
     const CONTRACTORS = [
       ['спр_мастера', 'id_мастера', 'мастер'],
@@ -123,7 +190,16 @@ window.Cache = (() => {
         });
       });
     });
-    return staff.concat(guests);
+    // Переходный период С1 (ADR-028 → ADR-031): пока у подрядчика есть
+    // доступ к боевому файлу, его старый вход (родной id, рабочая доска
+    // задач боевого) главнее — исполнителя с тем же id_в_учёте в списке
+    // не дублируем. Когда в С1.2 появится доска из файла сервиса,
+    // приоритет развернётся и доступ подрядчиков к боевому отзовётся
+    // (DoD С1).
+    const contractorIds = new Set(guests.map((g) => g['id_сотрудника']));
+    const executors = executorLoginOptions().filter(
+      (e) => !contractorIds.has(e['id_в_учёте']));
+    return staff.concat(guests, executors);
   }
 
   // Запуск авто-обновления каждые 30 минут (§3.1).
@@ -154,12 +230,17 @@ window.Cache = (() => {
 
   return {
     refresh,
+    refreshService,
     get,
+    getService,
+    serviceExecutors,
     forDropdown,
     activeEmployees,
     startAutoRefresh,
     stopAutoRefresh,
     onUpdate,
     getLastUpdated: () => lastUpdated,
+    setServiceOnly: (flag) => { serviceOnly = !!flag; },
+    isServiceOnly: () => serviceOnly,
   };
 })();

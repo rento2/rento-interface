@@ -93,11 +93,13 @@ window.Screens = (() => {
       'Войти →');
 
     // Пустой справочник сотрудников — тупик: объясняем, не молчим
-    // (REVIEW-1.2, замечание #4).
+    // (REVIEW-1.2, замечание #4). Режим исполнителя (файл сервиса,
+    // ADR-031) передаёт свой текст через opts.emptyText.
     const empty = opts.employees.length === 0;
     if (empty) {
       submitBtn.disabled = true;
-      fieldError.textContent = 'В справочнике нет активных сотрудников. ' +
+      fieldError.textContent = opts.emptyText ||
+        'В справочнике нет активных сотрудников. ' +
         'Заполните спр_сотрудники в Google Sheets и обновите страницу.';
       fieldError.style.display = '';
     }
@@ -216,13 +218,27 @@ window.Screens = (() => {
     // Подрядчик (мастер/горничная с доступом) видит ТОЛЬКО доску задач:
     // ни операций, ни отчётов, ни справочников. Ранний выход — блоки ниже
     // просто не собираются (гейт продублирован в app.js showФорма).
+    //
+    // Исполнитель файла сервиса (ADR-031, isExecutor): его доска читает
+    // файл сервиса и появится в С1.2 — до неё карточка неактивна, чтобы
+    // вход и роль уже можно было проверить на живом файле.
     if (opts.isRestricted) {
+      const grid = h('div', { class: 'cards-grid' });
+      if (opts.isExecutor) {
+        grid.append(card('Доска задач — скоро', null, '📋'));
+      } else {
+        grid.append(card('Доска задач', 'задачи_сервис', '📋'));
+      }
       const only = h('section', { class: 'section' },
         h('div', { class: 'section-head' },
           h('span', { class: 'eyebrow' }, 'СЕРВИС'),
           h('h2', { class: 'h2' }, 'Мои задачи')),
-        h('div', { class: 'cards-grid' },
-          card('Доска задач', 'задачи_сервис', '📋')));
+        grid);
+      if (opts.isExecutor) {
+        only.append(h('p', { class: 'muted' },
+          'Вход работает. Доска задач появится в следующем обновлении — ' +
+          'вы увидите здесь свои задачи.'));
+      }
       const mainEl = h('main', { class: 'app-main' }, greet, only);
       app.append(headerEl, mainEl);
       return { indicatorSlot, todaySlot: h('div') };

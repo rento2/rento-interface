@@ -8,6 +8,19 @@ window.RENTO_CONFIG = {
   // ID боевого Google Sheets (ACCESS.md). В URL между /d/ и /edit.
   SHEETS_ID: '1-duT0vV4LWHugiQ8lS-JP5-eAryRetNL8y8_x-aXym4',
 
+  // ID файла сервиса «Rento_сервис» (ADR-031, TICKET-С1.1; ACCESS.md).
+  // Задачи, исполнители, опись — отдельный файл: исполнители имеют
+  // Editor только на него, к боевому файлу не обращаются вообще.
+  SERVICE_SPREADSHEET_ID: '1NgxqjDTYMa81zYfx2hiSySKm2l7MhNAop8EhzN0jYTk',
+
+  // Справочники файла сервиса (SERVICE_SPEC §4). Грузятся вторым
+  // batchGet при старте сессии; для исполнителей — единственный источник
+  // (боевой файл им недоступен, режим serviceOnly в cache.js).
+  SERVICE_REFERENCE_SHEETS: [
+    'спр_квартиры',      // зеркало спр_объекты (Apps Script, раз в час)
+    'спр_исполнители',   // вход исполнителей: id, фио, роль, id_в_учёте
+  ],
+
   // OAuth Client ID (тип Web application, PKCE, без client secret).
   OAUTH_CLIENT_ID:
     '627310065695-4mfau0f32nbvp1i9be8gj2tptg18p96o.apps.googleusercontent.com',
