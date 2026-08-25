@@ -975,13 +975,16 @@
       // 403 от боевого файла — возможно, это исполнитель сервисного
       // блока (ADR-031): у него Editor только на файл сервиса. Пробуем
       // режим serviceOnly; если файл сервиса читается — обычный вход,
-      // список — из спр_исполнители. Очередь отправки НЕ стартуем: все
-      // её отправители пишут в боевой файл (доска исполнителя — С1.2).
+      // список — из спр_исполнители. Очередь стартуем и здесь
+      // (REVIEW-C1 критичное №1): доска и карточка исполнителя кладут
+      // операции в очередь, без start() нет ни recoverStuck, ни ретраев
+      // по графику §5.2 — смены статусов терялись бы тихо.
       if (describeSheetsError(err).code === 403) {
         try {
           Cache.setServiceOnly(true);
           await Cache.refresh();
           Cache.startAutoRefresh(handleSheetsError);
+          Queue.start();
           scheduleTokenRefresh();
           if (sessionValid() && currentEmployee()) {
             showMain();
