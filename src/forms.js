@@ -5194,6 +5194,11 @@ window.Forms = (() => {
       };
 
       function recompute() {
+        // Выбрали супервайзера при пустом типе — тип сам встаёт в
+        // «сервис» (фаундер 27.08: категории с расценками должны
+        // появляться сразу; начисление супервайзера и так только по
+        // типу «сервис» — REVIEW-C1 №10). Явно выбранный тип не трогаем.
+        if (!typeSelect.value && isSupChosen()) typeSelect.value = 'сервис';
         const t = typeSelect.value;
         cleaningSelect.style.display = t === 'уборка' ? '' : 'none';
         workSelect.style.display =
@@ -6217,6 +6222,11 @@ window.Forms = (() => {
         return !!exe && String(exe['роль']).trim() === 'супервайзер';
       };
       function recompute() {
+        // Выбрали супервайзера при пустом типе — тип сам встаёт в
+        // «сервис» (фаундер 27.08: категории с расценками должны
+        // появляться сразу; начисление супервайзера и так только по
+        // типу «сервис» — REVIEW-C1 №10). Явно выбранный тип не трогаем.
+        if (!typeSelect.value && isSup()) typeSelect.value = 'сервис';
         const t = typeSelect.value;
         cleaningSelect.style.display = t === 'уборка' ? '' : 'none';
         workSelect.style.display = (t === 'сервис' && isSup()) ? '' : 'none';
