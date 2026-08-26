@@ -5040,6 +5040,44 @@ window.Forms = (() => {
       pushUpdate(data, patch, 'смена_статуса');
     }
 
+    // --- перетаскивание на десктопе (запрос фаундера 27.08) ---
+    // Разрешены ровно те переходы, что есть кнопками, с теми же правами
+    // §5: вперёд по цепочке — исполнитель своей задачи или менеджер;
+    // «подтверждено» и возврат из «выполнено» — только менеджер.
+    // dragTask — тащимая карточка: колонка подсвечивается только если
+    // переход разрешён именно ЕЙ.
+    let dragTask = null;
+    function dropAllowed(data, to) {
+      const from = statusOf(data);
+      const mine = data['id_исполнителя'] === myId;
+      const movable = isManager || mine;
+      if (from === to) return false;
+      if (from === 'новая' && to === 'в_работе') return movable;
+      if (from === 'в_работе' && to === 'выполнено') return movable;
+      if (from === 'выполнено' && to === 'подтверждено') return isManager;
+      if (from === 'выполнено' && to === 'в_работе') return isManager;
+      return false;
+    }
+    function dropMove(data, to) {
+      const from = statusOf(data);
+      if (from === 'выполнено' && to === 'подтверждено') {
+        // Подтверждение = начисление в учёт: та же транзакция и те же
+        // подтверждающие диалоги, что у кнопки «✓ Подтвердить».
+        svcConfirmTask(data, myId, render);
+        return;
+      }
+      if (from === 'выполнено' && to === 'в_работе') {
+        const reason = prompt('Причина возврата (обязательно):');
+        if (!reason || !reason.trim()) return;
+        pushUpdate(data,
+          { 'статус': 'в_работе', 'причина_возврата': reason.trim() },
+          'возврат',
+          'Задача ' + data['id_задачи'] + ' возвращена: ' + reason.trim());
+        return;
+      }
+      moveTask(data, to);
+    }
+
     // ---------------- форма добавления (только менеджер) ----------------
     function addForm() {
       const typeSelect = selectInput();
@@ -5495,6 +5533,7 @@ window.Forms = (() => {
       const moves = movesRow(data, true, null);
       const card = h('div', {
         class: 'kb-card' + (pending ? ' kb-card-pending' : ''),
+        draggable: pending ? 'false' : 'true',
       },
         h('div', { class: 'kb-card-top' },
           h('span', { class: 'task-date' },
@@ -5521,6 +5560,18 @@ window.Forms = (() => {
         card.addEventListener('click', (e) => {
           if (e.target.closest('button, input, select, textarea, a')) return;
           openTaskModal(data);
+        });
+        // Перетаскивание на соседний этап (десктоп; после drag браузер
+        // click не шлёт, с модалкой не конфликтует).
+        card.addEventListener('dragstart', (e) => {
+          dragTask = data;
+          e.dataTransfer.setData('text/plain', data['id_задачи']);
+          e.dataTransfer.effectAllowed = 'move';
+          card.classList.add('kb-dragging');
+        });
+        card.addEventListener('dragend', () => {
+          dragTask = null;
+          card.classList.remove('kb-dragging');
         });
       }
       return card;
@@ -5670,7 +5721,7 @@ window.Forms = (() => {
           body.append(arc);
         }
         stats.push({ col, total, sum });
-        boardBox.append(h('div', {
+        const column = h('div', {
           class: 'kb-col ' + col.cls +
             (col.status === activeCol ? ' kb-col-active' : ''),
         },
@@ -5679,7 +5730,24 @@ window.Forms = (() => {
             h('span', { class: 'kb-col-meta' },
               plural(total, 'задача', 'задачи', 'задач') +
               (sum ? ': ' + sum.toLocaleString('ru-RU') + ' ₽' : ''))),
-          body));
+          body);
+        column.addEventListener('dragover', (e) => {
+          if (!dragTask || !dropAllowed(dragTask, col.status)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          column.classList.add('kb-col-over');
+        });
+        column.addEventListener('dragleave', () =>
+          column.classList.remove('kb-col-over'));
+        column.addEventListener('drop', (e) => {
+          e.preventDefault();
+          column.classList.remove('kb-col-over');
+          const t = dragTask;
+          dragTask = null;
+          if (!t || !dropAllowed(t, col.status)) return;
+          dropMove(t, col.status);
+        });
+        boardBox.append(column);
       });
 
       // Шапка этапа (телефон, стиль amo): «‹ ЭТАП ›», счётчик и сумма,
