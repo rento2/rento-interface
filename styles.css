@@ -894,32 +894,149 @@ body {
 .today-sub-desc { flex: 1; min-width: 0; color: var(--text-2); }
 .today-sub-sum { flex: none; font-weight: 700; }
 
+/* =====================================================================
+   МОБИЛЬНАЯ ВЁРСТКА (26.08.2026). Один брейкпоинт 640px — телефон.
+   Принципы: шапка в одну строку и липкая; карточки действий — сетка
+   2 колонки; «сегодня» — карточки вместо таблицы (ID и статус скрыты,
+   отменённые — зачёркиванием); формы и фильтры — во всю ширину.
+   ===================================================================== */
 @media (max-width: 640px) {
-  .field-row-2 { flex-direction: column; gap: 12px; }
-  .dist-row { flex-wrap: wrap; }
-  .dist-row > select,
-  .dist-recipient { flex: 1 1 100%; }
-  .dist-sum { flex: 1 1 auto; }
+  /* --- типографика: заголовки чуть мельче, экрану 375px хватает --- */
+  .h1 { font-size: 22px; }
+  .h2 { font-size: 17px; }
+  body { -webkit-tap-highlight-color: transparent; }
+
+  /* --- вход --- */
+  .auth-wrap { padding: 16px; }
+  .auth-card { padding: 32px 24px; gap: 24px; }
+
+  /* --- шапка: одна строка, липкая; кнопки-иконки --- */
+  .app-header {
+    position: sticky;
+    top: 0;
+    z-index: 60;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+    padding: 10px 16px;
+  }
+  .app-header .logo { gap: 8px; }
+  .app-header .logo-mark { width: 24px; height: 24px; }
+  .app-header .logo-text { font-size: 18px; letter-spacing: -0.5px; }
+  .header-right { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+  /* «Обновить справочники» — только иконка ↻, круглая кнопка. */
+  .refresh-label { display: none; }
+  .refresh-btn {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    justify-content: center;
+    border-radius: 50%;
+  }
+  .refresh-icon { font-size: 16px; }
+  .help-btn { width: 36px; height: 36px; }
+  /* Индикатор очереди: «Всё отправлено» — шум, прячем; проблемные
+     состояния (отправка/ретрай/провал) остаются на виду. */
+  .queue-chip { padding: 6px 12px; font-size: 12px; }
+  .queue-ok { display: none; }
+  .user-chip { padding: 6px 12px; gap: 6px; }
+  .user-name {
+    max-width: 96px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* --- главный экран --- */
+  .app-main { padding: 20px 16px 48px; gap: 28px; }
+  .section { gap: 12px; }
+  .role-chip { padding: 4px 12px; }
+
+  /* Карточки действий: 2 колонки, компактные — весь набор основателя
+     (17 карточек) на телефоне без «простыни». */
+  .cards-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .form-card {
+    min-height: 92px;
+    padding: 14px 16px;
+    gap: 8px;
+    border-radius: 16px;
+  }
+  .form-card-icon { font-size: 22px; }
+  .form-card-label { font-size: 14px; letter-spacing: -0.2px; }
+
+  /* --- «сегодня» на главном: строки-карточки вместо таблицы ---
+     Строка: [чекбокс] ТИП …………… СУММА / описание второй строкой.
+     ID и статус скрыты; отменённая операция — приглушена и зачёркнута. */
+  .today-head { flex-wrap: wrap; }
+  .app-main .today-thead { display: none; }
+  .app-main .today-row { flex-wrap: wrap; gap: 4px 10px; padding: 12px 14px; }
+  .app-main .tc-id, .app-main .tc-status { display: none; }
+  .app-main .tc-type { width: auto; font-size: 13px; }
+  .app-main .tc-sum { width: auto; margin-left: auto; font-size: 14px; }
+  .app-main .tc-desc {
+    flex: 1 1 100%;
+    order: 5;
+    min-width: 0;
+    font-size: 13px;
+    color: var(--text-2);
+  }
+  .app-main .row-cancelled .tc-type,
+  .app-main .row-cancelled .tc-desc { text-decoration: line-through; }
   .today-children { padding-left: 16px; }
   .today-sub-type { width: 100px; }
-  .auth-card { padding: 32px; }
-  .app-header { flex-direction: column; gap: 12px; align-items: stretch; padding: 16px; }
-  .header-right { flex-wrap: wrap; justify-content: center; }
-  .app-main { padding: 32px 16px; gap: 32px; }
-  .report-card { flex-direction: column; align-items: stretch; }
-  .modal-card { padding: 24px; }
-  .tc-id, .tc-type, .tc-status { display: none; }
+  .today-actions .btn-ghost { width: 100%; }
 
-  /* Экран формы на телефоне (ADR-006): крошки и карточка во всю ширину,
-     футер — кнопки в столбик, «Сохранить» сверху, подсказка ⌥Enter скрыта. */
-  .nav-row { padding: 16px 16px 0; gap: 8px; flex-wrap: wrap; }
-  .form-main { padding: 20px 16px 40px; }
-  .op-card { padding: 24px; gap: 24px; }
+  /* --- «Поиск операций» / «Отчёт по сотрудникам» (те же .today-*):
+     таблица без принудительных 720px; ID и статус скрыты, тип сжат.
+     Строки «описание + сумма» (отчёт) остаются одной строкой. --- */
+  .op-search-results .today-table { min-width: 0; }
+  .op-card .tc-id, .op-card .tc-status { display: none; }
+  .op-card .tc-type { width: auto; font-size: 13px; }
+  .op-card .tc-sum { width: auto; margin-left: auto; }
+  .op-card .tc-desc { min-width: 0; }
+
+  /* --- экран формы (ADR-006): карточка во всю ширину, футер столбиком,
+     «Сохранить» сверху, подсказка ⌥Enter скрыта --- */
+  .nav-row { padding: 12px 16px 0; gap: 8px; flex-wrap: wrap; }
+  .form-main { padding: 16px 12px 40px; }
+  .op-card { padding: 24px 18px; gap: 22px; border-radius: 20px; }
   .op-footer { flex-direction: column; align-items: stretch; gap: 12px; }
   .op-footer-hint { display: none; }
   .op-footer-actions { flex-direction: column-reverse; }
   .op-footer-actions .btn-ghost,
   .op-footer-actions .btn-auto { width: 100%; }
+
+  /* --- поля --- */
+  .field-row-2 { flex-direction: column; gap: 12px; }
+  .dist-row { flex-wrap: wrap; }
+  .dist-row > select,
+  .dist-recipient { flex: 1 1 100%; }
+  .dist-sum { flex: 1 1 auto; }
+
+  /* Превью отчёта собственнику: моноширинный текст мельче, чтобы меньше
+     горизонтального скролла внутри textarea. */
+  .report-area { font-size: 11px; min-height: 280px; }
+  .report-card { flex-direction: column; align-items: stretch; }
+
+  /* --- доска сервиса: фильтры и форма добавления во всю ширину --- */
+  .kb-filters .field-input { max-width: 100%; }
+
+  /* --- модалка: на телефоне во весь экран. align-items остаётся
+     flex-start: stretch фиксировал высоту карточки в высоту экрана, и
+     контент длиннее вылезал за закрашенный фон (фаундер 26.08). --- */
+  .modal-overlay { padding: 0; }
+  .modal-card {
+    width: 100%;
+    max-width: 100%;
+    min-height: 100vh;
+    border-radius: 0;
+    padding: 20px 16px 40px;
+  }
+}
+
+/* Совсем узкий экран (iPhone SE и мельче): имя в чипе прячем — остаётся
+   аватар и «Выйти»; кто вошёл, видно в приветствии главного экрана. */
+@media (max-width: 400px) {
+  .user-name, .user-sep { display: none; }
 }
 
 /* --- задачи по сервису: канбан-доска (14.07.2026) --------------------- */
@@ -929,27 +1046,25 @@ body {
   gap: 14px;
   align-items: start;
 }
+/* Колонка в стиле amo (26.08.2026): без рамки и фона — зона на светлом
+   поле, карточки белые с тонкой границей. */
 .kb-col {
   display: flex; flex-direction: column; gap: 10px;
   min-height: 120px;
-  padding: 12px;
-  background: var(--surface-2);
-  border: 1.5px solid var(--border);
-  border-radius: var(--radius-field);
-  transition: border-color 0.12s, background 0.12s;
 }
-/* Колонка подсвечивается, когда над ней тащат карточку. */
-.kb-col-over { border-color: var(--lime-500); background: var(--lime-50); }
+/* Колонка подсвечивается, когда над ней тащат карточку (старая доска). */
+.kb-col-over { background: var(--lime-50); border-radius: var(--radius-field); }
 
 .kb-col-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding-bottom: 8px;
-  border-bottom: 2px solid var(--border);
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding-bottom: 10px;
+  border-bottom: 3px solid var(--border);
 }
 .kb-col-title {
-  font-size: 12px; font-weight: 700; letter-spacing: 1px;
-  text-transform: uppercase; color: var(--text-2);
+  font-size: 13px; font-weight: 800; letter-spacing: 1px;
+  text-transform: uppercase; color: var(--ink);
 }
+.kb-col-meta { font-size: 12px; font-weight: 500; color: var(--text-2); }
 .kb-col-count {
   min-width: 24px; padding: 1px 8px;
   border-radius: var(--radius-pill);
@@ -973,20 +1088,20 @@ body {
 .kb-more { align-self: flex-start; font-size: 13px; }
 
 .kb-card {
-  padding: 12px;
+  padding: 12px 14px;
   background: var(--surface-0);
   border: 1px solid var(--border);
-  border-radius: 14px;
-  box-shadow: var(--shadow-elev1);
-  cursor: grab;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 0.12s;
 }
-.kb-card:active { cursor: grabbing; }
+.kb-card:hover { border-color: var(--lime-500); }
 .kb-dragging { opacity: 0.45; }
 .kb-card-open { box-shadow: var(--shadow-elev2); }
 
 .kb-card-top {
   display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 .kb-obj { font-size: 13px; font-weight: 700; color: var(--ink); }
 /* Описание: ровно 3 строки, дальше — многоточие. Плюс min-height в те же
@@ -1037,9 +1152,12 @@ body {
 .kb-details .field-input { padding: 8px 10px; font-size: 13px; }
 .kb-details .field-label { font-size: 12px; }
 
-.kb-moves { display: flex; flex-wrap: wrap; gap: 6px; }
+.kb-moves { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Отступ кнопок от контента — и в превью-карточке, и в модалке. */
+.kb-card .kb-moves { margin-top: 12px; }
+.kb-modal .kb-moves { margin-top: 4px; }
 .kb-move-btn {
-  padding: 6px 10px;
+  padding: 8px 14px;
   font-family: inherit; font-size: 12px; font-weight: 600;
   color: var(--ink);
   background: var(--surface-2);
@@ -1053,17 +1171,149 @@ body {
 
 .kb-foot { margin-top: 8px; font-size: 11px; }
 
-/* На узком экране доска складывается в колонку: менеджер листает статусы
-   сверху вниз, карточки двигает кнопками (DnD на мобильных не работает). */
-/* Четыре колонки требуют ширины. Сужаемся ступенями, на телефоне —
-   одна колонка: подрядчик листает свои задачи сверху вниз, двигает
-   кнопками (DnD на мобильных не работает). */
+/* Четыре колонки требуют ширины — на планшете сужаемся до двух. */
 @media (max-width: 1200px) {
   .kb-board { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* --- доска на телефоне (26.08.2026): вкладки статусов ------------------
+   Вместо простыни из четырёх колонок подряд — вкладки со счётчиками:
+   видна ОДНА колонка, переключение вкладками (.kb-tab строит forms.js,
+   класс .kb-board-tabbed — только у новой доски сервиса; старая доска
+   подрядчиков складывается в столбик, как раньше). На десктопе вкладки
+   и кнопка «+ Новая задача» скрыты — там всё по-старому. */
+.kb-tabs { display: none; }
+
+/* «+ Новая задача» — свёрнутая форма добавления (как «Быстрое
+   добавление» в amo), на всех экранах. Тумблер есть только у новой
+   доски сервиса; старая доска подрядчиков живёт с раскрытой формой. */
+.kb-add-toggle {
+  display: block;
+  width: 100%;
+  padding: 11px 12px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--lime-700);
+  background: var(--surface-0);
+  border: 1.5px dashed var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+.kb-add-toggle:hover { border-color: var(--lime-500); }
+.kb-col-body:has(.kb-add-toggle) .kb-add { display: none; }
+.kb-col-body:has(.kb-add-toggle) .kb-add.kb-add-open { display: flex; }
+
+/* Модалка задачи: описание, чек-лист, материалы. */
+.kb-modal { display: flex; flex-direction: column; gap: 20px; }
+.kb-modal-desc {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.kb-check { display: flex; flex-direction: column; gap: 8px; }
+.kb-check-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 14px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.kb-check-item input {
+  width: 18px;
+  height: 18px;
+  margin: 1px 0 0;
+  flex: none;
+  accent-color: var(--lime-700);
+}
+.kb-check-done span { text-decoration: line-through; color: var(--text-3); }
+.kb-check-add { display: flex; gap: 8px; }
+.kb-check-del {
+  flex: none;
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-2);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  cursor: pointer;
+}
+.kb-check-del:hover { color: var(--error); border-color: var(--error); }
+.kb-check-add .field-input { flex: 1; padding: 8px 10px; font-size: 14px; }
+.kb-modal textarea.field-input { min-height: 64px; }
+
 @media (max-width: 700px) {
   .kb-board { grid-template-columns: 1fr; }
-  .kb-card { cursor: default; }
+
+  /* Шапка этапа в стиле amo: «‹ ЭТАП ›», счётчик и сумма, цветная
+     полоса статуса, точки-позиция. Свайп по доске листает этапы
+     (forms.js). Липкая — под мобильной шапкой приложения. */
+  .kb-tabs {
+    display: block;
+    position: sticky;
+    top: 56px;              /* высота липкой мобильной шапки */
+    z-index: 40;
+    padding: 6px 0 0;
+    background: var(--surface-0);
+  }
+  .kb-stage {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-bottom: 10px;
+    border-bottom: 3px solid var(--border);
+  }
+  .kb-stage.kb-col-new { border-bottom-color: var(--lime-500); }
+  .kb-stage.kb-col-work { border-bottom-color: var(--warning); }
+  .kb-stage.kb-col-check { border-bottom-color: var(--ink); }
+  .kb-stage.kb-col-done { border-bottom-color: var(--success); }
+  .kb-stage-row { display: flex; align-items: center; gap: 8px; }
+  .kb-stage-main { flex: 1; min-width: 0; text-align: center; }
+  .kb-stage-title {
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  .kb-stage-meta { margin-top: 2px; font-size: 13px; color: var(--text-2); }
+  .kb-stage-nav {
+    flex: none;
+    width: 40px;
+    height: 40px;
+    font-family: inherit;
+    font-size: 20px;
+    color: var(--text-2);
+    background: var(--surface-0);
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    cursor: pointer;
+  }
+  .kb-stage-nav:disabled { opacity: 0.3; cursor: default; }
+  .kb-stage-dots { display: flex; gap: 6px; justify-content: center; }
+  .kb-stage-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--border);
+  }
+  .kb-dot-on { background: var(--ink); }
+
+  /* Одна колонка на экране; её шапку прячем — этап назван выше. */
+  .kb-board-tabbed .kb-col { display: none; }
+  .kb-board-tabbed .kb-col.kb-col-active { display: flex; }
+  .kb-board-tabbed .kb-col-head { display: none; }
+
+  /* Карточка и кнопки переходов — под палец. */
+  .kb-card { padding: 14px; }
+  .kb-moves { gap: 8px; }
+  .kb-move-btn { padding: 10px 16px; font-size: 13px; }
 }
 
 /* Заведение задачи прямо в колонке «Новые» (отдельного экрана формы нет). */

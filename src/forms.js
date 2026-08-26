@@ -4934,7 +4934,66 @@ window.Forms = (() => {
     const monthKey = (iso) => String(iso || '').slice(0, 7);   // YYYY-MM
     const thisMonth = today().slice(0, 7);
     const confirmedAt = (d) => d['подтверждена'] || d['дата_внесения'];
-    const boardBox = h('div', { class: 'kb-board' });
+    // Мобильные вкладки статусов (26.08.2026): на телефоне доска
+    // показывает ОДНУ колонку, переключение — вкладками со счётчиками
+    // (см. .kb-tabs в styles.css; десктоп не меняется — решение
+    // фаундера 25.08 «сейчас удобно» касается десктопной механики).
+    let activeCol = null;
+    const tabsBox = h('div', { class: 'kb-tabs' });
+    const boardBox = h('div', { class: 'kb-board kb-board-tabbed' });
+
+    // Свайп по доске = соседний этап (механика amo, 26.08.2026).
+    // Горизонтальный жест ≥56px, заметно горизонтальнее вертикали —
+    // чтобы не срабатывал на обычном скролле списка.
+    function shiftStage(d) {
+      const i = COLUMNS.findIndex((c) => c.status === activeCol) + d;
+      if (i < 0 || i >= COLUMNS.length) return;
+      activeCol = COLUMNS[i].status;
+      render();
+    }
+    let swX = null;
+    let swY = null;
+    [tabsBox, boardBox].forEach((el) => {
+      el.addEventListener('touchstart', (e) => {
+        swX = e.touches[0].clientX;
+        swY = e.touches[0].clientY;
+      }, { passive: true });
+      el.addEventListener('touchend', (e) => {
+        if (swX === null) return;
+        const dx = e.changedTouches[0].clientX - swX;
+        const dy = e.changedTouches[0].clientY - swY;
+        swX = null;
+        if (Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy) * 1.6) {
+          shiftStage(dx < 0 ? 1 : -1);
+        }
+      }, { passive: true });
+    });
+
+    const plural = (n, one, few, many) => {
+      const m10 = n % 10;
+      const m100 = n % 100;
+      return n + ' ' + (m10 === 1 && m100 !== 11 ? one
+        : (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many));
+    };
+
+    // Чек-лист хранится одной ячейкой чек_лист: пункт на строку,
+    // отмеченный — с префиксом «[x] » (читается и глазами в листе).
+    // ВАЖНО: колонки чек_лист и потрачено_на_материалы_₽ должны
+    // существовать в журнал_задачи — serviceUpdate молча отбрасывает
+    // неизвестные (плюс tg_выполнено для телеграм-пуша выполненных).
+    function parseChecklist(s) {
+      return String(s || '').split('\n')
+        .map((l) => l.trim()).filter(Boolean)
+        .map((l) => {
+          const m = /^\[([ xX])\]\s*(.*)$/.exec(l);
+          return m ? { done: m[1] !== ' ', text: m[2] }
+            : { done: false, text: l };
+        });
+    }
+    function serializeChecklist(items) {
+      return items.map((i) => (i.done ? '[x] ' : '[ ] ') + i.text)
+        .join('\n');
+    }
     const reloadBtn = h('button',
       { class: 'btn-primary btn-auto', type: 'button' }, 'Обновить доску');
 
@@ -5008,6 +5067,46 @@ window.Forms = (() => {
       workSelect.style.display = 'none';
       const descInput = textarea('Что сделать');
       descInput.rows = 2;
+      // Чек-лист — как в карточке задачи (фаундер 26.08): поле «Новый
+      // пункт…» + «+», добавленные пункты списком, ✕ удаляет. Enter в
+      // поле добавляет пункт, а не отправляет форму доски.
+      const checkItems = [];
+      const checkList = h('div', { class: 'kb-check' });
+      const checkInput = textInput('Пункт чек-листа (необязательно)…');
+      const checkAddBtn = h('button',
+        { class: 'kb-move-btn', type: 'button' }, '+');
+      function redrawCheck() {
+        UI.clear(checkList);
+        checkItems.forEach((text, i) => {
+          const del = h('button',
+            { class: 'kb-check-del', type: 'button', title: 'Убрать пункт' },
+            '✕');
+          del.addEventListener('click', () => {
+            checkItems.splice(i, 1);
+            redrawCheck();
+          });
+          const cb = h('input', { type: 'checkbox', disabled: 'true' });
+          checkList.append(h('div', { class: 'kb-check-item' },
+            cb, h('span', {}, text), del));
+        });
+      }
+      function addCheckItem() {
+        const v = checkInput.value.trim();
+        if (!v) return;
+        checkItems.push(v);
+        checkInput.value = '';
+        redrawCheck();
+      }
+      checkAddBtn.addEventListener('click', addCheckItem);
+      checkInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          addCheckItem();
+        }
+      });
+      const checkWrap = h('div', { class: 'kb-check' },
+        checkList,
+        h('div', { class: 'kb-check-add' }, checkInput, checkAddBtn));
       const respSelect = selectInput();
       fillPeople(respSelect, '— исполнитель —');
       const dueInput = h('input', { class: 'field-input', type: 'date' });
@@ -5056,6 +5155,7 @@ window.Forms = (() => {
         .forEach((el) => el.addEventListener('change', recompute));
 
       addBtn.addEventListener('click', () => {
+        addCheckItem();   // набранный, но не добавленный пункт не теряем
         const t = typeSelect.value;
         const desc = descInput.value.trim();
         const supService = t === 'сервис' && isSupChosen();
@@ -5093,6 +5193,7 @@ window.Forms = (() => {
           'цена_₽': t === 'закупка' ? '' : (num(priceInput.value) || ''),
           'ориентировочный_бюджет_₽':
             t === 'закупка' ? (num(priceInput.value) || '') : '',
+          'чек_лист': checkItems.join('\n'),
           'статус': 'новая',
         };
         Queue.add('сервис_задача', {
@@ -5105,6 +5206,7 @@ window.Forms = (() => {
         });
         tasks.push({ ...row, 'id_задачи': '', _pending: true });
         typeSelect.value = ''; flatSelect.value = ''; descInput.value = '';
+        checkInput.value = ''; checkItems.length = 0; redrawCheck();
         respSelect.value = ''; dueInput.value = ''; priceInput.value = '';
         recompute();
         render();
@@ -5112,134 +5214,285 @@ window.Forms = (() => {
 
       return h('div', { class: 'kb-add' },
         typeSelect, flatSelect, cleaningSelect, respSelect, workSelect,
-        descInput, dueInput, priceInput, priceHint, err, addBtn);
+        descInput, checkWrap, dueInput, priceInput, priceHint, err, addBtn);
     }
 
     // ------------------------------ карточка -----------------------------
-    function taskCard(data) {
-      const id = data['id_задачи'];
+    // Превью в колонке (стиль amo, 26.08.2026): дата, объект, описание,
+    // мета-строка, исполнитель и ОДНА главная кнопка перехода. Тап по
+    // карточке открывает модалку задачи со всем остальным: полное
+    // описание, чек-лист, материалы, правки, полный набор переходов.
+
+    // Кнопки переходов по правам §5. compact=true — только главный
+    // переход (превью); в модалке — всё, включая возврат и отмену.
+    // Перед сменой статуса из модалки — closeFn().
+    function movesRow(data, compact, closeFn) {
       const status = statusOf(data);
-      const pending = !!data._pending;
       const mine = data['id_исполнителя'] === myId;
-      const t = data['тип_задачи'] || 'сервис';
-      const price = data['тип_задачи'] === 'закупка'
-        ? (data['ориентировочный_бюджет_₽']
-          ? '~' + data['ориентировочный_бюджет_₽'] + ' ₽' : '')
-        : (data['цена_₽'] ? data['цена_₽'] + ' ₽' : '');
-
-      // --- детали (ответственный/цена/комментарий) ---
-      const details = h('div', { class: 'kb-details', style: 'display:none' });
-      const respSelect = selectInput();
-      const priceInput = numberInput();
-      const priceComment = textInput('Почему изменили цену');
-      const noteInput = textInput('Комментарий');
-      noteInput.value = data['комментарий'] || '';
-      const saveBtn = h('button',
-        { class: 'kb-move-btn kb-save', type: 'button' }, 'Сохранить');
-      const dErr = h('div', { class: 'field-error', style: 'display:none' });
-
-      if (isManager) {
-        fillPeople(respSelect, '— исполнитель —');
-        respSelect.value = data['id_исполнителя'] || '';
-        details.append(field('Исполнитель', respSelect));
-      }
-      const priceEditable = status !== 'подтверждено' && canOverridePrice &&
-        (isManager || mine) && t !== 'закупка';
-      if (priceEditable) {
-        priceInput.value = data['цена_₽'] || '';
-        details.append(field('Цена ₽', priceInput));
-        if (!isManager) details.append(field('Причина изменения', priceComment));
-      }
-      details.append(field('Комментарий', noteInput), dErr, saveBtn);
-
-      saveBtn.addEventListener('click', () => {
-        const patch = { 'комментарий': noteInput.value.trim() };
-        let logAction = 'редактирование';
-        if (isManager) patch['id_исполнителя'] = respSelect.value;
-        if (priceEditable) {
-          const newPrice = num(priceInput.value) || '';
-          if (String(newPrice) !== String(data['цена_₽'] || '')) {
-            // Комментарий при перебитии обязателен для исполнителя (§6),
-            // кроме «Прочих поручений» супервайзера — там цена по
-            // согласованию, супервайзер ставит её сам (фаундер 25.08).
-            // Матчим по key через label (REVIEW-C1 №9): переименование
-            // label в конфиге не отвяжет старые задачи, пока строка та же.
-            const wrk = CONFIG.SUPERVISOR_WORKS.find(
-              (x) => x.label === data['вид_работы']);
-            const freePrice = !!wrk && wrk.key === 'прочее';
-            if (!isManager && !freePrice && !priceComment.value.trim()) {
-              dErr.textContent = 'Изменение цены — укажите причину.';
-              dErr.style.display = '';
-              return;
-            }
-            patch['цена_₽'] = newPrice;
-            if (!isManager) patch['цена_изменена'] = priceComment.value.trim();
-            logAction = 'изменение_цены';
-          }
-        }
-        dErr.style.display = 'none';
-        pushUpdate(data, patch, logAction,
-          'Задача ' + id + ': правка (' + logAction + ')');
-      });
-
-      const toggle = h('button', { class: 'kb-toggle', type: 'button' },
-        ((isManager || supervisor)
-          ? '👤 ' + (data['id_исполнителя']
-            ? (personName[data['id_исполнителя']] || data['id_исполнителя'])
-            : 'не назначен')
-          : '💬 подробнее') +
-        (data['комментарий'] ? ' · есть' : ''));
-      toggle.addEventListener('click', () => {
-        const open = details.style.display !== 'none';
-        details.style.display = open ? 'none' : '';
-        card.classList.toggle('kb-card-open', !open);
-      });
-
-      // --- кнопки переходов по правам §5 ---
+      const movable = isManager || mine;
       const moves = h('div', { class: 'kb-moves' });
-      const mkBtn = (label, fn, cls) => {
+      const mk = (label, fn, cls) => {
         const btn = h('button',
           { class: 'kb-move-btn' + (cls ? ' ' + cls : ''), type: 'button' },
           label);
         btn.addEventListener('click', fn);
         return btn;
       };
-      if (!pending) {
-        const movable = isManager || mine;
-        if (status === 'новая' && movable) {
-          moves.append(mkBtn('Взять в работу →', () => moveTask(data, 'в_работе')));
-        }
-        if (status === 'в_работе' && movable) {
-          moves.append(mkBtn('Выполнено →', () => moveTask(data, 'выполнено')));
-        }
-        if (status === 'выполнено' && isManager) {
-          moves.append(mkBtn('✓ Подтвердить',
-            () => svcConfirmTask(data, myId, render), 'kb-save'));
-          moves.append(mkBtn('← Вернуть', () => {
+      const go = (fn) => () => { if (closeFn) closeFn(); fn(); };
+      if (data._pending) return moves;
+      if (status === 'новая' && movable) {
+        moves.append(mk('Взять в работу →',
+          go(() => moveTask(data, 'в_работе')), 'kb-save'));
+      }
+      if (status === 'в_работе' && movable) {
+        moves.append(mk('Выполнено →',
+          go(() => moveTask(data, 'выполнено')), 'kb-save'));
+      }
+      if (status === 'выполнено' && isManager) {
+        moves.append(mk('✓ Подтвердить',
+          go(() => svcConfirmTask(data, myId, render)), 'kb-save'));
+        if (!compact) {
+          moves.append(mk('← Вернуть', () => {
             const reason = prompt('Причина возврата (обязательно):');
             if (!reason || !reason.trim()) return;
+            if (closeFn) closeFn();
             // Лог-действие «возврат» из enum §4.6 (REVIEW-C1 №7).
-            const patch = { 'статус': 'в_работе',
-              'причина_возврата': reason.trim() };
-            pushUpdate(data, patch, 'возврат',
+            pushUpdate(data,
+              { 'статус': 'в_работе', 'причина_возврата': reason.trim() },
+              'возврат',
               'Задача ' + data['id_задачи'] + ' возвращена: ' + reason.trim());
           }));
         }
-        // Отмена — менеджер/основатель, до подтверждения (§5).
-        if (isManager && status !== 'подтверждено') {
-          moves.append(mkBtn('✕', () => {
-            if (!confirm('Отменить задачу ' + id + '?')) return;
-            pushUpdate(data, { 'статус': CANCELLED }, 'смена_статуса',
-              'Задача ' + id + ' отменена');
-          }));
-        }
       }
+      if (!compact && isManager && status !== 'подтверждено') {
+        moves.append(mk('Отменить задачу', () => {
+          if (!confirm('Отменить задачу ' + data['id_задачи'] + '?')) return;
+          if (closeFn) closeFn();
+          pushUpdate(data, { 'статус': CANCELLED }, 'смена_статуса',
+            'Задача ' + data['id_задачи'] + ' отменена');
+        }));
+      }
+      return moves;
+    }
+
+    function priceLabel(data) {
+      return (data['тип_задачи'] || 'сервис') === 'закупка'
+        ? (data['ориентировочный_бюджет_₽']
+          ? '~' + data['ориентировочный_бюджет_₽'] + ' ₽' : '')
+        : (data['цена_₽'] ? data['цена_₽'] + ' ₽' : '');
+    }
+
+    // Модалка задачи (запрос фаундера 26.08): дата, адрес, исполнитель,
+    // полное описание, чек-лист, цена, материалы. Материалы — чисто
+    // информационное поле, в журналы учёта не попадает.
+    function openTaskModal(data) {
+      const box = h('div', { class: 'kb-modal' });
+      let modal = null;
+      const closeFn = () => { if (modal) modal.close(); };
+      const refresh = () => { UI.clear(box); build(); };
+
+      function build() {
+        const status = statusOf(data);
+        const t = data['тип_задачи'] || 'сервис';
+        const pending = !!data._pending;
+        const mine = data['id_исполнителя'] === myId;
+        const flat = flats.find((f) => f['id_объекта'] === data['id_объекта']);
+        const frozen = pending || status === 'подтверждено';
+
+        // --- сводка ---
+        const sumRow = (label, val) => h('div', { class: 'op-summary-row' },
+          h('span', { class: 'op-summary-label' }, label),
+          h('span', { class: 'op-summary-value' }, val));
+        const addr = flat
+          ? [flat['название_короткое'], flat['адрес']].filter(Boolean).join(' · ')
+          : (data['id_объекта'] || (t === 'закупка' ? 'закупка' : '—'));
+        const STATUS_HUMAN = { 'новая': 'Новая', 'в_работе': 'В работе',
+          'выполнено': 'Выполнено', 'подтверждено': 'Подтверждено' };
+        box.append(h('div', { class: 'op-summary' },
+          sumRow('Статус', (STATUS_HUMAN[status] || status) +
+            (status === 'подтверждено' && data['подтверждена']
+              ? ' · ' + shortDate(data['подтверждена']) : '')),
+          sumRow('Дата', shortDate(data['дата_внесения'])),
+          data['срок'] ? sumRow('Срок', shortDate(data['срок'])) : null,
+          sumRow('Адрес', addr),
+          sumRow('Исполнитель', data['id_исполнителя']
+            ? (personName[data['id_исполнителя']] || data['id_исполнителя'])
+            : 'не назначен'),
+          sumRow(t === 'закупка' ? 'Бюджет' : 'Цена', priceLabel(data) || '—'),
+          data['потрачено_на_материалы_₽']
+            ? sumRow('Материалы',
+              data['потрачено_на_материалы_₽'] + ' ₽') : null,
+          data['вид_работы'] ? sumRow('Вид работы', data['вид_работы']) : null));
+
+        // --- описание полностью ---
+        box.append(h('div', { class: 'kb-check' },
+          h('span', { class: 'eyebrow' }, 'ОПИСАНИЕ'),
+          h('p', { class: 'kb-modal-desc' }, data['описание'] || '—')));
+
+        if (data['причина_возврата'] && status === 'в_работе') {
+          box.append(h('div', { class: 'field-error' },
+            'Возврат: ' + data['причина_возврата']));
+        }
+
+        // --- чек-лист: отмечает исполнитель своей задачи или менеджер;
+        // пункты добавляет менеджер/супервайзер ---
+        const items = parseChecklist(data['чек_лист']);
+        const canTick = !frozen && (isManager || mine);
+        const canEditList = !frozen && (isManager || supervisor);
+        if (items.length || canEditList) {
+          const doneN = () => items.filter((i) => i.done).length;
+          const listBox = h('div', { class: 'kb-check' },
+            h('span', { class: 'eyebrow' }, 'ЧЕК-ЛИСТ' +
+              (items.length ? ' · ' + doneN() + '/' + items.length : '')));
+          const saveList = () => pushUpdate(data,
+            { 'чек_лист': serializeChecklist(items) }, 'редактирование',
+            'Задача ' + data['id_задачи'] + ': чек-лист ' +
+              doneN() + '/' + items.length);
+          items.forEach((it) => {
+            const cb = h('input', { type: 'checkbox' });
+            cb.checked = it.done;
+            if (!canTick) cb.disabled = true;
+            cb.addEventListener('change', () => {
+              it.done = cb.checked;
+              saveList();
+              refresh();
+            });
+            listBox.append(h('label',
+              { class: 'kb-check-item' + (it.done ? ' kb-check-done' : '') },
+              cb, h('span', {}, it.text)));
+          });
+          if (canEditList) {
+            const inp = textInput('Новый пункт…');
+            const add = h('button',
+              { class: 'kb-move-btn', type: 'button' }, '+');
+            add.addEventListener('click', () => {
+              const v = inp.value.trim();
+              if (!v) return;
+              items.push({ done: false, text: v });
+              saveList();
+              refresh();
+            });
+            listBox.append(h('div', { class: 'kb-check-add' }, inp, add));
+          }
+          box.append(listBox);
+        }
+
+        // --- комментарии (фаундер 26.08: свободный текст задачи здесь,
+        // хранится в существующей колонке комментарий) ---
+        const canNote = !frozen && (isManager || mine || supervisor);
+        if (canNote || String(data['комментарий'] || '').trim()) {
+          const noteArea = textarea('Комментарий к задаче');
+          noteArea.value = data['комментарий'] || '';
+          if (!canNote) noteArea.disabled = true;
+          const noteSave = h('button',
+            { class: 'kb-move-btn', type: 'button' }, 'Сохранить комментарий');
+          noteSave.addEventListener('click', () => {
+            pushUpdate(data, { 'комментарий': noteArea.value.trim() },
+              'редактирование',
+              'Задача ' + data['id_задачи'] + ': комментарий');
+            refresh();
+          });
+          box.append(h('div', { class: 'kb-check' },
+            h('span', { class: 'eyebrow' }, 'КОММЕНТАРИИ'),
+            noteArea, canNote ? noteSave : null));
+        }
+
+        // --- правки: исполнитель / цена / комментарий (логика §6) ---
+        const priceEditable = !frozen && canOverridePrice &&
+          (isManager || mine) && t !== 'закупка';
+        if (!frozen && (isManager || mine || supervisor)) {
+          const respSelect = selectInput();
+          const priceInput = numberInput();
+          const priceComment = textInput('Почему изменили цену');
+          // Потрачено на материалы — информационное поле (фаундер 26.08):
+          // в журналы учёта не попадает, просто фиксация суммы.
+          const matInput = numberInput();
+          matInput.value = data['потрачено_на_материалы_₽'] || '';
+          const saveBtn = h('button',
+            { class: 'kb-move-btn kb-save', type: 'button' }, 'Сохранить');
+          const dErr = h('div', { class: 'field-error', style: 'display:none' });
+          const details = h('div', { class: 'kb-details' },
+            h('span', { class: 'eyebrow' }, 'ПРАВКИ'));
+          if (isManager) {
+            fillPeople(respSelect, '— исполнитель —');
+            respSelect.value = data['id_исполнителя'] || '';
+            details.append(field('Исполнитель', respSelect));
+          }
+          if (priceEditable) {
+            priceInput.value = data['цена_₽'] || '';
+            details.append(field('Цена ₽', priceInput));
+            if (!isManager) details.append(field('Причина изменения', priceComment));
+          }
+          details.append(
+            field('Потрачено на материалы ₽', matInput), dErr, saveBtn);
+          saveBtn.addEventListener('click', () => {
+            const patch = { 'потрачено_на_материалы_₽':
+              num(matInput.value) || '' };
+            let logAction = 'редактирование';
+            if (isManager) patch['id_исполнителя'] = respSelect.value;
+            if (priceEditable) {
+              const newPrice = num(priceInput.value) || '';
+              if (String(newPrice) !== String(data['цена_₽'] || '')) {
+                // Комментарий при перебитии обязателен для исполнителя
+                // (§6), кроме «Прочих поручений» супервайзера — цена по
+                // согласованию (фаундер 25.08). Матч по key через label
+                // (REVIEW-C1 №9).
+                const wrk = CONFIG.SUPERVISOR_WORKS.find(
+                  (x) => x.label === data['вид_работы']);
+                const freePrice = !!wrk && wrk.key === 'прочее';
+                if (!isManager && !freePrice && !priceComment.value.trim()) {
+                  dErr.textContent = 'Изменение цены — укажите причину.';
+                  dErr.style.display = '';
+                  return;
+                }
+                patch['цена_₽'] = newPrice;
+                if (!isManager) patch['цена_изменена'] = priceComment.value.trim();
+                logAction = 'изменение_цены';
+              }
+            }
+            dErr.style.display = 'none';
+            pushUpdate(data, patch, logAction,
+              'Задача ' + data['id_задачи'] + ': правка (' + logAction + ')');
+            refresh();
+          });
+          box.append(details);
+        }
+
+        // --- переходы ---
+        const moves = movesRow(data, false, closeFn);
+        if (moves.children.length) box.append(moves);
+
+        box.append(h('div', { class: 'kb-foot muted' },
+          pending ? 'отправляется…'
+            : (data['id_задачи'] + (data['id_операции_учёта']
+              ? ' · учёт ' + data['id_операции_учёта'] : ''))));
+      }
+
+      build();
+      const flat = flats.find((f) => f['id_объекта'] === data['id_объекта']);
+      modal = UI.modal(flat
+        ? (flat['название_короткое'] || data['id_объекта'])
+        : ((data['тип_задачи'] === 'закупка' ? 'Закупка' : 'Задача')), box);
+    }
+
+    // Превью-карточка в колонке.
+    function taskCard(data) {
+      const status = statusOf(data);
+      const pending = !!data._pending;
+      const t = data['тип_задачи'] || 'сервис';
+      const items = parseChecklist(data['чек_лист']);
+      const price = priceLabel(data);
 
       const metaBits = [];
       if (data['вид_работы']) metaBits.push(data['вид_работы']);
       if (data['срок']) metaBits.push('срок ' + shortDate(data['срок']));
       if (price) metaBits.push(price);
+      if (items.length) {
+        metaBits.push('✓ ' + items.filter((i) => i.done).length +
+          '/' + items.length);
+      }
 
+      const moves = movesRow(data, true, null);
       const card = h('div', {
         class: 'kb-card' + (pending ? ' kb-card-pending' : ''),
       },
@@ -5251,16 +5504,25 @@ window.Forms = (() => {
             (t === 'закупка' ? 'закупка' : '—'))),
         h('p', { class: 'kb-desc' }, data['описание'] || ''),
         metaBits.length
-          ? h('div', { class: 'kb-foot' }, metaBits.join(' · ')) : '',
+          ? h('div', { class: 'kb-foot' }, metaBits.join(' · ')) : null,
+        (isManager || supervisor)
+          ? h('div', { class: 'kb-foot muted' }, '👤 ' +
+            (data['id_исполнителя']
+              ? (personName[data['id_исполнителя']] || data['id_исполнителя'])
+              : 'не назначен')) : null,
         data['причина_возврата'] && status === 'в_работе'
           ? h('div', { class: 'field-error' },
-            'Возврат: ' + data['причина_возврата']) : '',
-        toggle, details, moves,
-        h('div', { class: 'kb-foot muted' }, pending ? 'отправляется…' :
-          (id + (status === 'подтверждено' && data['подтверждена']
-            ? ' · ' + shortDate(data['подтверждена']) : '') +
-          (data['id_операции_учёта']
-            ? ' · учёт ' + data['id_операции_учёта'] : ''))));
+            'Возврат: ' + data['причина_возврата']) : null,
+        moves.children.length ? moves : null,
+        pending
+          ? h('div', { class: 'kb-foot muted' }, 'отправляется…') : null);
+      if (!pending) {
+        // Тап по карточке (мимо кнопок) открывает модалку задачи.
+        card.addEventListener('click', (e) => {
+          if (e.target.closest('button, input, select, textarea, a')) return;
+          openTaskModal(data);
+        });
+      }
       return card;
     }
 
@@ -5343,9 +5605,18 @@ window.Forms = (() => {
     }
 
     function render() {
-      if (archiveOpen) { renderArchive(); return; }
+      if (archiveOpen) { UI.clear(tabsBox); renderArchive(); return; }
       UI.clear(boardBox);
+      UI.clear(tabsBox);
       const shown = visibleTasks();
+      // Активная вкладка по умолчанию — первая непустая колонка:
+      // у исполнителя утром это «Новые», в течение дня — «В работе».
+      if (!activeCol) {
+        const first = COLUMNS.find((c) =>
+          shown.some((d) => statusOf(d) === c.status));
+        activeCol = (first || COLUMNS[0]).status;
+      }
+      const stats = [];   // счётчик и сумма по колонкам — для шапок
       COLUMNS.forEach((col) => {
         let list = shown.filter((d) => statusOf(d) === col.status)
           .sort((a, b) => String(b['дата_внесения'] || '')
@@ -5363,6 +5634,7 @@ window.Forms = (() => {
           list = current;
         }
         const total = list.length;
+        const sum = list.reduce((s, d) => s + num(d['цена_₽']), 0);
         let hidden = 0;
         if (col.status === 'подтверждено' && !showAllDone && total > DONE_LIMIT) {
           hidden = total - DONE_LIMIT;
@@ -5370,7 +5642,15 @@ window.Forms = (() => {
         }
         const body = h('div', { class: 'kb-col-body' });
         if (col.status === 'новая' && (isManager || supervisor)) {
-          body.append(addForm());
+          // На телефоне форма добавления свёрнута в кнопку «+ Новая
+          // задача» — развёрнутая, она одна занимает весь экран.
+          // На десктопе кнопка скрыта, форма раскрыта как раньше.
+          const af = addForm();
+          const tgl = h('button',
+            { class: 'kb-add-toggle', type: 'button' }, '+ Новая задача');
+          tgl.addEventListener('click', () =>
+            af.classList.toggle('kb-add-open'));
+          body.append(tgl, af);
         }
         if (!total) {
           body.append(h('p', { class: 'kb-empty muted' }, 'пусто'));
@@ -5389,12 +5669,45 @@ window.Forms = (() => {
           arc.addEventListener('click', () => { archiveOpen = true; render(); });
           body.append(arc);
         }
-        boardBox.append(h('div', { class: 'kb-col ' + col.cls },
+        stats.push({ col, total, sum });
+        boardBox.append(h('div', {
+          class: 'kb-col ' + col.cls +
+            (col.status === activeCol ? ' kb-col-active' : ''),
+        },
           h('div', { class: 'kb-col-head' },
             h('span', { class: 'kb-col-title' }, col.title),
-            h('span', { class: 'kb-col-count' }, String(total))),
+            h('span', { class: 'kb-col-meta' },
+              plural(total, 'задача', 'задачи', 'задач') +
+              (sum ? ': ' + sum.toLocaleString('ru-RU') + ' ₽' : ''))),
           body));
       });
+
+      // Шапка этапа (телефон, стиль amo): «‹ ЭТАП ›», счётчик и сумма,
+      // цветная полоса статуса, точки-позиция. Свайп листает этапы.
+      const idx = COLUMNS.findIndex((c) => c.status === activeCol);
+      const st = stats[idx];
+      const mkNav = (label, d, off) => {
+        const b = h('button', {
+          class: 'kb-stage-nav', type: 'button',
+          disabled: off ? 'true' : false,
+        }, label);
+        b.addEventListener('click', () => shiftStage(d));
+        return b;
+      };
+      tabsBox.append(h('div', { class: 'kb-stage ' + st.col.cls },
+        h('div', { class: 'kb-stage-row' },
+          mkNav('‹', -1, idx === 0),
+          h('div', { class: 'kb-stage-main' },
+            h('div', { class: 'kb-stage-title' }, st.col.title),
+            h('div', { class: 'kb-stage-meta' },
+              plural(st.total, 'задача', 'задачи', 'задач') +
+              (st.sum ? ': ' + st.sum.toLocaleString('ru-RU') + ' ₽' : ''))),
+          mkNav('›', 1, idx === COLUMNS.length - 1)),
+        h('div', { class: 'kb-stage-dots' },
+          ...COLUMNS.map((c, i) =>
+            h('span', {
+              class: 'kb-stage-dot' + (i === idx ? ' kb-dot-on' : ''),
+            })))));
     }
 
     async function load() {
@@ -5451,6 +5764,7 @@ window.Forms = (() => {
         h('div', { class: 'op-footer-actions' }, reloadBtn)),
       filters,
       h('div', { class: 'op-divider' }),
+      tabsBox,
       boardBox);
     form.addEventListener('submit', (e) => { e.preventDefault(); load(); });
     load();
