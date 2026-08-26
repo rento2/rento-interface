@@ -1044,7 +1044,8 @@ body {
   display: grid;
   grid-template-columns: repeat(4, 1fr);   /* новая · в работе · требует · выполнено */
   gap: 14px;
-  align-items: start;
+  /* stretch (дефолт): колонка занимает всю высоту ряда — иначе пустая
+     колонка была зоной дропа в 120px, и перетаскивание «не работало». */
 }
 /* Колонка в стиле amo (26.08.2026): без рамки и фона — зона на светлом
    поле, карточки белые с тонкой границей. */
@@ -1054,6 +1055,13 @@ body {
 }
 /* Колонка подсвечивается, когда над ней тащат карточку (старая доска). */
 .kb-col-over { background: var(--lime-50); border-radius: var(--radius-field); }
+/* Пока тащишь карточку — колонки, куда её МОЖНО бросить, обведены. */
+.kb-can-drop {
+  outline: 2px dashed var(--lime-500);
+  outline-offset: -2px;
+  border-radius: var(--radius-field);
+  background: #ccff000f;
+}
 
 .kb-col-head {
   display: flex; flex-direction: column; align-items: center; gap: 2px;
@@ -1083,7 +1091,7 @@ body {
    карточку и показывает это приглушённостью. */
 .kb-col-locked { opacity: 0.6; }
 
-.kb-col-body { display: flex; flex-direction: column; gap: 10px; }
+.kb-col-body { display: flex; flex-direction: column; gap: 10px; flex: 1; }
 .kb-empty { font-size: 13px; font-style: italic; padding: 8px 2px; }
 .kb-more { align-self: flex-start; font-size: 13px; }
 

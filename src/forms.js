@@ -5047,6 +5047,19 @@ window.Forms = (() => {
     // dragTask — тащимая карточка: колонка подсвечивается только если
     // переход разрешён именно ЕЙ.
     let dragTask = null;
+    // Колонка по X-координате курсора — для дропа в зазор или мимо.
+    function colAtX(x) {
+      const els = [...boardBox.querySelectorAll('.kb-col')];
+      let best = null;
+      let bestDist = Infinity;
+      els.forEach((el, i) => {
+        if (!COLUMNS[i]) return;
+        const r = el.getBoundingClientRect();
+        const d = x < r.left ? r.left - x : (x > r.right ? x - r.right : 0);
+        if (d < bestDist) { bestDist = d; best = COLUMNS[i]; }
+      });
+      return bestDist <= 40 ? best : null;   // дальше 40px — не считаем
+    }
     function dropAllowed(data, to) {
       const from = statusOf(data);
       const mine = data['id_исполнителя'] === myId;
@@ -5077,6 +5090,26 @@ window.Forms = (() => {
       }
       moveTask(data, to);
     }
+    // Страховочный приёмник на всей доске (вешается ОДИН раз): дроп в
+    // зазор между колонками или чуть мимо решается по X-координате.
+    // Колоночные обработчики главнее: если колонка уже отменила событие
+    // или сняла dragTask — доска не вмешивается.
+    boardBox.addEventListener('dragover', (e) => {
+      if (e.defaultPrevented || !dragTask) return;
+      const target = colAtX(e.clientX);
+      if (!target || !dropAllowed(dragTask, target.status)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+    });
+    boardBox.addEventListener('drop', (e) => {
+      if (e.defaultPrevented || !dragTask) return;
+      e.preventDefault();
+      const t = dragTask;
+      dragTask = null;
+      const target = colAtX(e.clientX);
+      if (!t || !target || !dropAllowed(t, target.status)) return;
+      dropMove(t, target.status);
+    });
 
     // ---------------- форма добавления (только менеджер) ----------------
     function addForm() {
@@ -5568,10 +5601,22 @@ window.Forms = (() => {
           e.dataTransfer.setData('text/plain', data['id_задачи']);
           e.dataTransfer.effectAllowed = 'move';
           card.classList.add('kb-dragging');
+          // Обвести колонки-цели. Через rAF: синхронная мутация DOM в
+          // dragstart обрывает перетаскивание в Chrome.
+          requestAnimationFrame(() => {
+            if (!dragTask) return;
+            boardBox.querySelectorAll('.kb-col').forEach((el, i) => {
+              if (COLUMNS[i] && dropAllowed(data, COLUMNS[i].status)) {
+                el.classList.add('kb-can-drop');
+              }
+            });
+          });
         });
         card.addEventListener('dragend', () => {
           dragTask = null;
           card.classList.remove('kb-dragging');
+          boardBox.querySelectorAll('.kb-can-drop').forEach((el) =>
+            el.classList.remove('kb-can-drop'));
         });
       }
       return card;
@@ -5731,6 +5776,10 @@ window.Forms = (() => {
               plural(total, 'задача', 'задачи', 'задач') +
               (sum ? ': ' + sum.toLocaleString('ru-RU') + ' ₽' : ''))),
           body);
+        column.addEventListener('dragenter', (e) => {
+          if (!dragTask || !dropAllowed(dragTask, col.status)) return;
+          e.preventDefault();
+        });
         column.addEventListener('dragover', (e) => {
           if (!dragTask || !dropAllowed(dragTask, col.status)) return;
           e.preventDefault();
