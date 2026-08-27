@@ -6108,9 +6108,53 @@ window.Forms = (() => {
     const defBox = h('div');
     const guestBox = h('div');
     const tasksBox = h('div');
-    const content = h('div', { class: 'flat-card' },
+    const teamWrap = h('div', { class: 'flat-card' },
       headBox, passportBox, instrBox, invBox, renoBox, defBox, guestBox,
       tasksBox);
+
+    // Переключатель как в черновике: карточка команды / превью пути
+    // гостя. Превью собирается из ТЕКУЩЕГО паспорта тем же рендером,
+    // что и настоящая страница гостя (GuestView) — публикация листа и
+    // ссылка для этого не нужны.
+    const segTeamBtn = h('button',
+      { class: 'fp-seg-btn fp-seg-on', type: 'button' }, 'Карточка · команда');
+    const segGuestBtn = h('button',
+      { class: 'fp-seg-btn', type: 'button' }, 'Путь гостя');
+    const guestPreviewBox = h('div', { style: 'display:none' });
+    function isoDate(offset) {
+      const d = new Date();
+      d.setDate(d.getDate() + (offset || 0));
+      const p = (n) => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+    }
+    function renderGuestPreview() {
+      UI.clear(guestPreviewBox);
+      const link = guestLinks.find((l) =>
+        l['id_объекта'] === flatId &&
+        String(l['статус'] || 'активна') === 'активна');
+      const inD = link ? String(link['заезд'] || '').slice(0, 10) : isoDate(0);
+      const outD = link ? String(link['выезд'] || '').slice(0, 10) : isoDate(3);
+      guestPreviewBox.append(h('p', { class: 'fp-preview-note' },
+        'Превью: так гость видит свою страницу. Здесь — текущий ' +
+        'паспорт; у гостя данные фиксируются на момент создания ссылки.'));
+      const host = h('div');
+      guestPreviewBox.append(host);
+      GuestView.render(host, guestPayload(inD, outD));
+    }
+    function showView(guest) {
+      teamWrap.style.display = guest ? 'none' : '';
+      guestPreviewBox.style.display = guest ? '' : 'none';
+      segTeamBtn.classList.toggle('fp-seg-on', !guest);
+      segGuestBtn.classList.toggle('fp-seg-on', guest);
+      if (guest) renderGuestPreview();
+      window.scrollTo({ top: 0 });
+    }
+    segTeamBtn.addEventListener('click', () => showView(false));
+    segGuestBtn.addEventListener('click', () => showView(true));
+
+    const content = h('div', {},
+      h('div', { class: 'fp-seg' }, segTeamBtn, segGuestBtn),
+      teamWrap, guestPreviewBox);
 
     function logStamp() { return new Date().toISOString(); }
 
@@ -6352,9 +6396,10 @@ window.Forms = (() => {
       fillSelect(audSel, [
         { value: 'гость', text: 'видит гость' },
         { value: 'команда', text: 'только команда' }], 'Кому видно…');
+      const secField = field('Раздел', secSel);
       if (preset && preset.section) {
         secSel.value = preset.section;
-        secSel.style.display = 'none';
+        secField.style.display = 'none';
       }
       if (preset && preset.audience) audSel.value = preset.audience;
       const titleInp = textInput('Заголовок («Духовка: как включить»)');
@@ -6394,8 +6439,10 @@ window.Forms = (() => {
         titleInp.value = ''; textInp.value = ''; posSel.value = '';
         renderPassport(); renderInstructions();
       }, 'kb-save');
-      return h('div', { class: 'kb-add' },
-        secSel, audSel, titleInp, textInp, posSel, err, addBtn);
+      return h('div', { class: 'kb-add fp-form' },
+        secField, field('Кому видно', audSel), field('Заголовок', titleInp),
+        field('Текст', textInp),
+        field('Позиция описи (не обязательно)', posSel), err, addBtn);
     }
 
     function activeInstr() {
@@ -6597,8 +6644,10 @@ window.Forms = (() => {
         descInp.value = '';
         renderDefects();
       }, 'kb-save');
-      return h('div', { class: 'kb-add' },
-        zoneSel, descInp, origSel, guestSel, err, addBtn);
+      return h('div', { class: 'kb-add fp-form' },
+        field('Зона', zoneSel), field('Что за дефект', descInp),
+        field('Откуда узнали', origSel), field('Видно гостю?', guestSel),
+        err, addBtn);
     }
 
     function renderDefects() {
@@ -6863,7 +6912,7 @@ window.Forms = (() => {
             'Публикация листа обновляется до ~5 минут — страница гостя ' +
             'оживёт не мгновенно.')));
       }
-      body.append(h('div', { class: 'kb-add' },
+      body.append(h('div', { class: 'kb-add fp-form' },
         field('Заезд', inDate), field('Выезд', outDate), err, createBtn));
       det.append(body);
       guestBox.append(det);
@@ -6974,7 +7023,8 @@ window.Forms = (() => {
       fillSelect(cleaningSelect, [
         { value: 'плановая', text: 'плановая' },
         { value: 'генеральная', text: 'генеральная' }], 'Тип уборки…');
-      cleaningSelect.style.display = 'none';
+      const cleaningField = field('Тип уборки', cleaningSelect);
+      cleaningField.style.display = 'none';
       const respSelect = selectInput();
       respSelect.append(h('option', { value: '' }, '— исполнитель —'));
       const uchetDup = new Set(Cache.serviceExecutors()
@@ -6994,7 +7044,8 @@ window.Forms = (() => {
         value: w.key,
         text: w.label + (w.price ? ' — ' + w.price + ' ₽' : ''),
       })), 'Вид работы…');
-      workSelect.style.display = 'none';
+      const workField = field('Вид работы', workSelect);
+      workField.style.display = 'none';
       const descInput = textInput('Что сделать (один повод — одна задача)');
       const clInput = textarea('Чек-лист: пункт с новой строки (не обязательно)');
       const dueInput = dateInput();
@@ -7016,8 +7067,8 @@ window.Forms = (() => {
         // типу «сервис» — REVIEW-C1 №10). Явно выбранный тип не трогаем.
         if (!typeSelect.value && isSup()) typeSelect.value = 'сервис';
         const t = typeSelect.value;
-        cleaningSelect.style.display = t === 'уборка' ? '' : 'none';
-        workSelect.style.display = (t === 'сервис' && isSup()) ? '' : 'none';
+        cleaningField.style.display = t === 'уборка' ? '' : 'none';
+        workField.style.display = (t === 'сервис' && isSup()) ? '' : 'none';
         priceInput.placeholder = t === 'закупка' ? 'Ориент. бюджет ₽' : 'Цена ₽';
         let def = null;
         if (t === 'сервис' && isSup() && workSelect.value) {
@@ -7083,9 +7134,13 @@ window.Forms = (() => {
         recompute(); renderTasks();
       });
 
-      return h('div', { class: 'kb-add' },
-        typeSelect, cleaningSelect, respSelect, workSelect, descInput,
-        clInput, dueInput, priceInput, priceHint, err, addBtn);
+      return h('div', { class: 'kb-add fp-form' },
+        field('Тип', typeSelect), cleaningField,
+        field('Исполнитель', respSelect), workField,
+        field('Что сделать', descInput),
+        field('Чек-лист (пункт с новой строки)', clInput),
+        field('Срок', dueInput), field('Цена ₽', priceInput),
+        priceHint, err, addBtn);
     }
 
     function renderTasks() {
@@ -7226,10 +7281,13 @@ window.Forms = (() => {
         { value: 'Ренто', text: 'Ренто' }], 'Чьё…');
       const noteInput = textInput('Примечание (серийник, дефекты)');
       const err = h('div', { class: 'field-error', style: 'display:none' });
+      const zoneField = field('Зона', zoneSelect);
+      const newZoneField = field('Название новой зоны', newZoneInput);
+      newZoneInput.style.display = '';
       const zoned = () => ZONED_CATS.includes(catSelect.value);
       const syncZone = () => {
-        zoneSelect.style.display = zoned() ? '' : 'none';
-        newZoneInput.style.display =
+        zoneField.style.display = zoned() ? '' : 'none';
+        newZoneField.style.display =
           (zoned() && zoneSelect.value === '__new') ? '' : 'none';
       };
       catSelect.addEventListener('change', syncZone);
@@ -7275,9 +7333,12 @@ window.Forms = (() => {
         rebuildZones(); syncZone();
         renderHead(); renderInventory();
       });
-      return h('div', { class: 'kb-add' },
-        catSelect, zoneSelect, newZoneInput, typeSelect, nameInput, qtyInput,
-        stateSelect, ownSelect, noteInput, err, addBtn);
+      return h('div', { class: 'kb-add fp-form' },
+        field('Группа', catSelect), zoneField, newZoneField,
+        field('Название', nameInput), field('Количество', qtyInput),
+        field('Состояние', stateSelect), field('Принадлежность', ownSelect),
+        field('Тип для сайта (не обязательно)', typeSelect),
+        field('Примечание', noteInput), err, addBtn);
     }
 
     let showGone = false;

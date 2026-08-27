@@ -5,22 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="robots" content="noindex, nofollow" />
   <title>Ренто — ваша квартира</title>
-  <link rel="icon" type="image/svg+xml" href="assets/rento-mark.svg?v=61" />
+  <link rel="icon" type="image/svg+xml" href="assets/rento-mark.svg?v=62" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
     href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700;800;900&display=swap"
     rel="stylesheet"
   />
-  <link rel="stylesheet" href="guest.css?v=61" />
+  <link rel="stylesheet" href="guest.css?v=62" />
 </head>
-<body>
+<body class="guest-page">
   <div id="guest"></div>
   <!-- Путь гостя (ADR-036 п.6–7): страница без входа. Токен — в
        URL-фрагменте (#...), на сервер не передаётся. Данные читаются
        из опубликованного CSV листа гостевые_блобы и расшифровываются
        здесь, в браузере гостя (AES-GCM, ключ = SHA-256 токена). -->
-  <script defer src="src/config.js?v=61"></script>
-  <script defer src="src/guest.js?v=61"></script>
+  <script defer src="src/config.js?v=62"></script>
+  <script defer src="src/guestview.js?v=62"></script>
+  <script defer src="src/guest.js?v=62"></script>
 </body>
 </html>
