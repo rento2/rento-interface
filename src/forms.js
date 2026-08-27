@@ -5989,8 +5989,11 @@ window.Forms = (() => {
     //   ['select', ...варианты] — закрытый список (чужое значение из
     //   листа добавляется опцией, чтобы не потерять);
     //   'secret' — текст; в просмотре (роли без правки) скрыт до тапа.
+    // Порядок секций — фаундер 27.08. Скрытые до его отмашки:
+    // Маркетинг, Оценка квартиры, Состояние ремонта, Ссылка гостю
+    // (код и данные сохранены, в карточке не рендерятся).
     const PASSPORT_SECTIONS = [
-      ['дом', 'Дом и объект', [
+      ['дом', 'Дом и квартира', [
         ['комнат', 'Комнат', 'num'], ['площадь_м²', 'Площадь, м²', 'num'],
         ['этаж', 'Этаж', 'num'], ['этажей_в_доме', 'Этажей в доме', 'num'],
         ['лифт', 'Лифт',
@@ -6048,12 +6051,13 @@ window.Forms = (() => {
         ['бельё_гостям_где', 'Где доп. комплект гостям'],
         ['полотенца_где', 'Где оставляем полотенца'],
       ]],
-      ['маркетинг', 'Маркетинг', [
-        ['заголовок_объявления', 'Заголовок объявления'],
-        ['описание_объявления', 'Описание', 'long'],
-        ['ссылка_авито', 'Ссылка на Авито'],
-      ]],
     ];
+    // Скрыто «пока» (фаундер 27.08): вернуть — перенести в
+    // PASSPORT_SECTIONS. Колонки в листе живут, данные не теряются.
+    // ['маркетинг', 'Маркетинг', [
+    //   ['заголовок_объявления', 'Заголовок объявления'],
+    //   ['описание_объявления', 'Описание', 'long'],
+    //   ['ссылка_авито', 'Ссылка на Авито']]],
     // Подсказки-примеры в пустых текстовых полях.
     const FIELD_PLACEHOLDER = {
       'счётчики_период': 'например: 15–19 числа',
@@ -6181,9 +6185,10 @@ window.Forms = (() => {
     const defBox = h('div');
     const guestBox = h('div');
     const tasksBox = h('div');
+    // Порядок и состав — фаундер 27.08: renoBox (состояние ремонта) и
+    // guestBox (ссылка гостю) пока скрыты — не добавляются в карточку.
     const teamWrap = h('div', { class: 'flat-card' },
-      headBox, passportBox, instrBox, invBox, renoBox, defBox, guestBox,
-      tasksBox);
+      headBox, passportBox, instrBox, invBox, defBox, tasksBox);
 
     // Переключатель как в черновике: карточка команды / превью пути
     // гостя. Превью собирается из ТЕКУЩЕГО паспорта тем же рендером,
@@ -6277,6 +6282,21 @@ window.Forms = (() => {
       return btn;
     }
 
+    // Видимый ответ на «Сохранить» (фаундер 27.08: «нужно какое-то
+    // действие, иначе не понятно что сохранилось»). Запись идёт через
+    // очередь — сбой отправки покажет её индикатор, как везде.
+    function cardToast(msg) {
+      let t = document.getElementById('fp-toast');
+      if (!t) {
+        t = h('div', { class: 'fp-toast', id: 'fp-toast' });
+        document.body.append(t);
+      }
+      t.textContent = msg;
+      t.classList.add('fp-toast-show');
+      clearTimeout(t._h);
+      t._h = setTimeout(() => t.classList.remove('fp-toast-show'), 2200);
+    }
+
     function sectionDetails(key, title, badge) {
       const det = h('details', { class: 'fp-sec' });
       if (secOpen[key]) det.open = true;
@@ -6363,6 +6383,7 @@ window.Forms = (() => {
               objId: flatId, patch, actorId: myId, logTimestamp: logStamp(),
               shortDesc: 'Паспорт ' + flatId + ': раздел «' + title + '»',
             });
+            cardToast('Сохранено: «' + title + '»');
             renderHead(); renderPassport();
           }, 'kb-save'));
           body.append(grid);
@@ -6372,7 +6393,8 @@ window.Forms = (() => {
         det.append(body);
         passportBox.append(det);
       });
-      passportBox.append(scoreSection());
+      // Секция «Оценка квартиры» скрыта (фаундер 27.08) — scoreSection()
+      // сохранена в коде, вернуть = добавить append.
     }
 
     function scoreSection() {
@@ -6526,6 +6548,7 @@ window.Forms = (() => {
         });
         instructions.push({ ...row, 'id_инструкции': '', _pending: true });
         titleInp.value = ''; textInp.value = ''; posSel.value = '';
+        cardToast('Добавлено: «' + row['заголовок'] + '»');
         renderPassport(); renderInstructions();
       }, 'kb-save');
       return h('div', { class: 'kb-add fp-form' },
@@ -6731,6 +6754,7 @@ window.Forms = (() => {
         });
         defects.push({ ...row, 'id_дефекта': '', _pending: true });
         descInp.value = '';
+        cardToast('Дефект записан');
         renderDefects();
       }, 'kb-save');
       return h('div', { class: 'kb-add fp-form' },
@@ -7136,7 +7160,45 @@ window.Forms = (() => {
       const workField = field('Вид работы', workSelect);
       workField.style.display = 'none';
       const descInput = textInput('Что сделать (один повод — одна задача)');
-      const clInput = textarea('Чек-лист: пункт с новой строки (не обязательно)');
+      // Чек-лист — конструктор как на доске (фаундер 27.08): «пункт…»
+      // + «+», добавленные пункты списком, ✕ убирает, Enter добавляет.
+      const checkItems = [];
+      const checkList = h('div', { class: 'kb-check' });
+      const checkInput = textInput('Пункт чек-листа (необязательно)…');
+      const checkAddBtn = h('button',
+        { class: 'kb-move-btn', type: 'button' }, '+');
+      function redrawCheck() {
+        UI.clear(checkList);
+        checkItems.forEach((text, i) => {
+          const del = h('button',
+            { class: 'kb-check-del', type: 'button', title: 'Убрать пункт' },
+            '✕');
+          del.addEventListener('click', () => {
+            checkItems.splice(i, 1);
+            redrawCheck();
+          });
+          const cb = h('input', { type: 'checkbox', disabled: 'true' });
+          checkList.append(h('div', { class: 'kb-check-item' },
+            cb, h('span', {}, text), del));
+        });
+      }
+      function addCheckItem() {
+        const v = checkInput.value.trim();
+        if (!v) return;
+        checkItems.push(v);
+        checkInput.value = '';
+        redrawCheck();
+      }
+      checkAddBtn.addEventListener('click', addCheckItem);
+      checkInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          addCheckItem();
+        }
+      });
+      const checkWrap = h('div', { class: 'kb-check' },
+        checkList,
+        h('div', { class: 'kb-check-add' }, checkInput, checkAddBtn));
       const dueInput = dateInput();
       const priceInput = numberInput();
       priceInput.placeholder = 'Цена ₽';
@@ -7178,6 +7240,7 @@ window.Forms = (() => {
         (el) => el.addEventListener('change', recompute));
 
       addBtn.addEventListener('click', () => {
+        addCheckItem();   // набранный, но не добавленный пункт не теряем
         const t = typeSelect.value;
         const desc = descInput.value.trim();
         const supService = t === 'сервис' && isSup();
@@ -7204,9 +7267,7 @@ window.Forms = (() => {
           'описание': desc,
           'id_исполнителя': respSelect.value,
           'срок': dueInput.value || '',
-          'чек_лист': clInput.value.split('\n')
-            .map((l) => l.trim()).filter(Boolean)
-            .map((l) => '[ ] ' + l).join('\n'),
+          'чек_лист': checkItems.join('\n'),
           'цена_₽': t === 'закупка' ? '' : (num(priceInput.value) || ''),
           'ориентировочный_бюджет_₽':
             t === 'закупка' ? (num(priceInput.value) || '') : '',
@@ -7219,7 +7280,9 @@ window.Forms = (() => {
         });
         tasks.push({ ...row, 'id_задачи': '', _pending: true });
         typeSelect.value = ''; descInput.value = ''; respSelect.value = '';
-        priceInput.value = ''; clInput.value = ''; dueInput.value = '';
+        priceInput.value = ''; dueInput.value = '';
+        checkInput.value = ''; checkItems.length = 0; redrawCheck();
+        cardToast('Задача создана: ' + desc.slice(0, 60));
         recompute(); renderTasks();
       });
 
@@ -7227,7 +7290,7 @@ window.Forms = (() => {
         field('Тип', typeSelect), cleaningField,
         field('Исполнитель', respSelect), workField,
         field('Что сделать', descInput),
-        field('Чек-лист (пункт с новой строки)', clInput),
+        field('Чек-лист (не обязательно)', checkWrap),
         field('Срок', dueInput), field('Цена ₽', priceInput),
         priceHint, err, addBtn);
     }
@@ -7246,7 +7309,7 @@ window.Forms = (() => {
         h('div', { class: 'section-head' },
           h('span', { class: 'eyebrow' }, 'ЗАДАЧИ'),
           h('h2', { class: 'h2' },
-            'Задачи квартиры' + (open.length ? ' — ' + open.length : ''))));
+            'Задачи по квартире' + (open.length ? ' — ' + open.length : ''))));
       if (isManager || supervisor) sec.append(addTaskForm());
       if (!open.length && !done.length) {
         sec.append(h('p', { class: 'muted' },
@@ -7401,6 +7464,7 @@ window.Forms = (() => {
         });
         inventory.push({ ...row, 'id_позиции': '', _pending: true });
         lastAddKey = key;
+        cardToast('В опись: ' + name + ' × ' + row['количество']);
         renderHead(); renderInventory();
       };
       btn.addEventListener('click', submit);
@@ -7470,6 +7534,7 @@ window.Forms = (() => {
         });
         inventory.push({ ...row, 'id_позиции': '', _pending: true });
         tplFocusKey = nextKey;
+        cardToast('В опись: ' + full + ' × ' + qty);
         renderHead(); renderInventory();
       };
       btn.addEventListener('click', submit);
