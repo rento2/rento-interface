@@ -996,6 +996,66 @@
       return {};
     });
 
+    // --- Путь гостя (ADR-036 п.6–7, TICKET-П6) --------------------------
+    // Блоб гостевых данных: upsert по hash в гостевые_блобы. Данные
+    // зашифрованы в браузере менеджера ДО постановки в очередь — сюда
+    // приходит только ciphertext.
+    async function upsertGuestBlob(blobRow) {
+      const sheet = CONFIG.GUEST_BLOBS_SHEET;
+      const { headers, records } = await Journal.serviceRead(sheet);
+      const existing = records.find((r) => r.data['hash'] === blobRow['hash']);
+      if (existing) {
+        await Journal.serviceUpdate(sheet, 'hash', blobRow['hash'], blobRow);
+      } else {
+        await Journal.serviceAppend(sheet, blobRow, headers);
+      }
+    }
+
+    // Создание ссылки: строка реестра (идемпотентно по токену — форма
+    // генерит его один раз) + блоб.
+    Queue.registerSender('гостевая_ссылка', async (formData) => {
+      const sheet = CONFIG.GUEST_LINKS_SHEET;
+      const { headers, records } = await Journal.serviceRead(sheet);
+      const dup = records.find(
+        (r) => r.data['токен'] === formData.row['токен']);
+      let id;
+      if (dup) {
+        id = dup.data['id_ссылки'];
+      } else {
+        id = Forms.nextRefId(records.map((r) => r.data), 'GL', 'id_ссылки');
+        await Journal.serviceAppend(sheet,
+          { ...formData.row, 'id_ссылки': id }, headers);
+      }
+      await upsertGuestBlob(formData.blob);
+      await Journal.serviceLog({
+        'timestamp': formData.logTimestamp,
+        'кто': formData.actorId,
+        'действие': 'гостевая_ссылка',
+        'id_записи': id,
+        'краткое_описание': formData.shortDesc,
+      });
+      return { id };
+    });
+
+    // Обновление блоба (пересборка данных) и/или патч реестра
+    // (гашение). При гашении блоб приходит затёртым — страница гостя
+    // видит пустой blob и говорит «ссылка неактивна».
+    Queue.registerSender('гостевая_ссылка_блоб', async (formData) => {
+      if (formData.blob) await upsertGuestBlob(formData.blob);
+      if (formData.patch) {
+        await Journal.serviceUpdate(CONFIG.GUEST_LINKS_SHEET,
+          'id_ссылки', formData.linkId, formData.patch);
+      }
+      await Journal.serviceLog({
+        'timestamp': formData.logTimestamp,
+        'кто': formData.actorId,
+        'действие': 'гостевая_ссылка',
+        'id_записи': formData.linkId,
+        'краткое_описание': formData.shortDesc,
+      });
+      return {};
+    });
+
     // Состояние ремонта: upsert по паре (id_объекта, зона). Ретрай
     // идемпотентен: existing найдётся → update теми же значениями.
     Queue.registerSender('сервис_ремонт', async (formData) => {

@@ -6089,6 +6089,7 @@ window.Forms = (() => {
     let instructions = [];
     let defects = [];
     let renovation = [];
+    let guestLinks = [];
     const revealed = {};  // secret-поля, раскрытые тапом в этой сессии
     const executorsById = svcExecutorsById();
     const personName = {};
@@ -6105,9 +6106,11 @@ window.Forms = (() => {
     const invBox = h('div');
     const renoBox = h('div');
     const defBox = h('div');
+    const guestBox = h('div');
     const tasksBox = h('div');
     const content = h('div', { class: 'flat-card' },
-      headBox, passportBox, instrBox, invBox, renoBox, defBox, tasksBox);
+      headBox, passportBox, instrBox, invBox, renoBox, defBox, guestBox,
+      tasksBox);
 
     function logStamp() { return new Date().toISOString(); }
 
@@ -6621,6 +6624,251 @@ window.Forms = (() => {
       defBox.append(det);
     }
 
+    // ------------------------- ссылка гостю ------------------------------
+    // ADR-036 п.6: токен ~82 бита; данные шифруются здесь, в браузере
+    // менеджера (AES-GCM, ключ = SHA-256 токена), и уходят в
+    // гостевые_блобы. hash строки — SHA-256('rento-guest:'+токен),
+    // из него ключ не восстановить.
+    function genGuestToken() {
+      const abc = 'abcdefghijklmnopqrstuvwxyz0123456789';
+      const buf = new Uint8Array(16);
+      crypto.getRandomValues(buf);
+      return [...buf].map((b) => abc[b % 36]).join('');
+    }
+    async function sha256Hex(s) {
+      const d = await crypto.subtle.digest('SHA-256',
+        new TextEncoder().encode(s));
+      return [...new Uint8Array(d)]
+        .map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+    function bufToB64(buf) {
+      const bytes = new Uint8Array(buf);
+      let s = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      }
+      return btoa(s);
+    }
+    async function guestEncrypt(token, payload) {
+      const keyBytes = await crypto.subtle.digest('SHA-256',
+        new TextEncoder().encode(token));
+      const key = await crypto.subtle.importKey('raw', keyBytes,
+        'AES-GCM', false, ['encrypt']);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key,
+        new TextEncoder().encode(JSON.stringify(payload)));
+      const hashHex = await sha256Hex('rento-guest:' + token);
+      return { hash: hashHex.slice(0, 32), iv: bufToB64(iv), blob: bufToB64(ct) };
+    }
+
+    // Гостевая проекция паспорта: ТОЛЬКО то, что положено гостю.
+    // Ни уборки, ни оценки, ни маркетинга, ни принадлежности, ни цен.
+    function guestPayload(checkin, checkout) {
+      const f = (k) => String(passport[k] || '').trim();
+      const acts = inventory.filter((i) =>
+        i['id_объекта'] === flatId &&
+        String(i['статус'] || 'актуальна') !== 'выбыла');
+      const groups = CATS.map((cat) => ({
+        n: cat,
+        p: acts.filter((i) => catOf(i) === cat).map((i) => ({
+          n: i['название'] || '',
+          k: num(i['количество']) || 1,
+          s: i['состояние'] || '',
+        })),
+      })).filter((g) => g.p.length);
+      return {
+        v: 1,
+        квартира: {
+          название: flat['название_короткое'] || '',
+          адрес: flat['адрес'] || '',
+          этаж: f('этаж'),
+          лифт: f('лифт'),
+        },
+        заезд: checkin,
+        выезд: checkout,
+        грейс_дни: CONFIG.GUEST_LINK_GRACE_DAYS,
+        факты: {
+          заезд_с: f('заезд_с'), выезд_до: f('выезд_до'),
+          макс_гостей: f('макс_гостей'), мин_возраст: f('мин_возраст'),
+          залог: f('залог_₽'), дети: f('дети'), питомцы: f('питомцы'),
+          курение: f('курение'), вечеринки: f('вечеринки'),
+          код_подъезда: f('код_подъезда'), код_замка: f('код_замка'),
+          тип_замка: f('тип_замка'),
+          бесконтактное: f('бесконтактное_заселение'),
+          wifi_сеть: f('wifi_сеть'), wifi_пароль: f('wifi_пароль'),
+          роутер: f('роутер_где'), мусор: f('мусор_куда'),
+          парковка: f('парковка'),
+          бельё_гостям: f('бельё_гостям_где'),
+          полотенца: f('полотенца_где'),
+        },
+        инструкции: activeInstr()
+          .filter((d) => d['аудитория'] === 'гость')
+          .map((d) => ({
+            раздел: d['раздел'] || '',
+            заголовок: d['заголовок'] || '',
+            текст: d['текст'] || '',
+          })),
+        дефекты: defects.filter((d) =>
+          d['id_объекта'] === flatId && d['видно_гостю'] === 'да' &&
+          String(d['статус'] || 'принят') !== 'устранён')
+          .map((d) => ({
+            описание: d['описание'] || '',
+            статус: String(d['статус'] || 'принят'),
+          })),
+        акт: groups,
+        контакт: CONFIG.GUEST_CONTACT,
+      };
+    }
+
+    function guestUrl(token) {
+      return CONFIG.GUEST_PAGE_BASE + '#' + token;
+    }
+    function copyBtn(text, label) {
+      const btn = h('button', { class: 'kb-move-btn', type: 'button' },
+        label || 'Скопировать ссылку');
+      btn.addEventListener('click', () => {
+        const done = () => {
+          const old = btn.textContent;
+          btn.textContent = '✓ Скопировано';
+          setTimeout(() => { btn.textContent = old; }, 1600);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, () => prompt('Скопируйте:', text));
+        } else {
+          prompt('Скопируйте:', text);
+        }
+      });
+      return btn;
+    }
+
+    function guestLinkRow(link) {
+      const active = String(link['статус'] || 'активна') === 'активна';
+      const row = h('div', { class: 'fp-instr' },
+        h('div', { class: 'fp-instr-top' },
+          instrChip(active ? 'активна' : 'погашена',
+            active ? 'fp-chip-ok' : ''),
+          h('span', { class: 'muted' },
+            String(link['заезд'] || '').slice(0, 10) + ' → ' +
+            String(link['выезд'] || '').slice(0, 10) +
+            ' · ' + (link['id_ссылки'] || '') +
+            (link._pending ? ' · отправляется…' : ''))));
+      if (active && !link._pending) {
+        const btns = h('div', { class: 'kb-moves' });
+        btns.append(copyBtn(guestUrl(link['токен'])));
+        btns.append(mkBtn('⟳ Обновить данные', async () => {
+          const blob = await guestEncrypt(link['токен'],
+            guestPayload(String(link['заезд'] || '').slice(0, 10),
+              String(link['выезд'] || '').slice(0, 10)));
+          blob['выезд'] = String(link['выезд'] || '').slice(0, 10);
+          blob['обновлено'] = logStamp();
+          Queue.add('гостевая_ссылка_блоб', {
+            blob, linkId: link['id_ссылки'],
+            patch: { 'обновлено': logStamp() },
+            actorId: myId, logTimestamp: logStamp(),
+            shortDesc: 'Ссылка ' + link['id_ссылки'] + ': данные пересобраны',
+          });
+          link['обновлено'] = logStamp();
+          renderGuestLinks();
+        }));
+        btns.append(mkBtn('✕ Погасить', async () => {
+          if (!confirm('Погасить ссылку? Страница гостя перестанет ' +
+            'открываться. Отменить нельзя (можно создать новую).')) return;
+          const hashHex = await sha256Hex('rento-guest:' + link['токен']);
+          Queue.add('гостевая_ссылка_блоб', {
+            blob: { hash: hashHex.slice(0, 32), iv: '', blob: '',
+              'выезд': '', 'обновлено': logStamp() },
+            linkId: link['id_ссылки'],
+            patch: { 'статус': 'погашена', 'обновлено': logStamp() },
+            actorId: myId, logTimestamp: logStamp(),
+            shortDesc: 'Ссылка ' + link['id_ссылки'] + ' погашена',
+          });
+          link['статус'] = 'погашена';
+          renderGuestLinks();
+        }));
+        row.append(btns);
+      }
+      return row;
+    }
+
+    let lastGuestUrl = null;  // только что созданная ссылка — показать сразу
+    function renderGuestLinks() {
+      UI.clear(guestBox);
+      if (!isManager) return;
+      const mine = guestLinks.filter((l) => l['id_объекта'] === flatId);
+      const active = mine.filter(
+        (l) => String(l['статус'] || 'активна') === 'активна');
+      const det = sectionDetails('гость', 'Ссылка гостю',
+        String(active.length));
+      const body = h('div', { class: 'fp-sec-body' });
+      body.append(h('p', { class: 'field-hint' },
+        'Ссылка — на бронь. Отправляем сами после договора, паспорта и ' +
+        'селфи гостя; гаснет через ' + CONFIG.GUEST_LINK_GRACE_DAYS +
+        ' дня после выезда. Гость видит только гостевую часть паспорта ' +
+        'и ничего не может менять.'));
+      if (!CONFIG.GUEST_BLOBS_CSV_URL) {
+        body.append(h('p', { class: 'error-banner' },
+          'Лист «гостевые_блобы» ещё не опубликован (фаундер) — ' +
+          'ссылки можно создавать, но страница гостя пока не откроется.'));
+      }
+      active.forEach((l) => body.append(guestLinkRow(l)));
+      const old = mine.filter(
+        (l) => String(l['статус']) === 'погашена').slice(-3);
+      if (old.length) {
+        body.append(h('p', { class: 'muted' }, 'Погашенные:'));
+        old.forEach((l) => body.append(guestLinkRow(l)));
+      }
+      // форма создания
+      const inDate = dateInput();
+      const outDate = dateInput();
+      const err = h('div', { class: 'field-error', style: 'display:none' });
+      const createBtn = mkBtn('Создать ссылку', async () => {
+        if (!inDate.value || !outDate.value || outDate.value < inDate.value) {
+          err.textContent = 'Укажите заезд и выезд (выезд не раньше заезда).';
+          err.style.display = '';
+          return;
+        }
+        err.style.display = 'none';
+        const token = genGuestToken();
+        const blob = await guestEncrypt(token,
+          guestPayload(inDate.value, outDate.value));
+        blob['выезд'] = outDate.value;
+        blob['обновлено'] = logStamp();
+        const row = {
+          'id_объекта': flatId,
+          'токен': token,
+          'заезд': inDate.value,
+          'выезд': outDate.value,
+          'статус': 'активна',
+          'создал': myId,
+          'дата_создания': logStamp(),
+          'обновлено': logStamp(),
+        };
+        Queue.add('гостевая_ссылка', {
+          row, blob, actorId: myId, logTimestamp: logStamp(),
+          shortDesc: 'Ссылка гостю: ' + (flat['название_короткое'] || flatId) +
+            ' ' + inDate.value + '→' + outDate.value,
+        });
+        guestLinks.push({ ...row, 'id_ссылки': '', _pending: true });
+        // Ссылку показываем сразу — менеджер копирует, не дожидаясь
+        // очереди (данные уже зашифрованы и поставлены на отправку).
+        lastGuestUrl = guestUrl(token);
+        renderGuestLinks();
+      }, 'kb-save');
+      if (lastGuestUrl) {
+        body.append(h('div', { class: 'fp-inv-flags' },
+          h('span', { class: 'eyebrow' }, 'ССЫЛКА ГОТОВА'),
+          h('p', { class: 'fp-guest-url' }, lastGuestUrl),
+          copyBtn(lastGuestUrl),
+          h('p', { class: 'field-hint' },
+            'Публикация листа обновляется до ~5 минут — страница гостя ' +
+            'оживёт не мгновенно.')));
+      }
+      body.append(h('div', { class: 'kb-add' },
+        field('Заезд', inDate), field('Выезд', outDate), err, createBtn));
+      det.append(body);
+      guestBox.append(det);
+    }
+
     // ------------------------ улучшения (задачи) ------------------------
     function taskPatch(data, patch, logAction, shortDesc) {
       Object.assign(data, patch);
@@ -7110,13 +7358,16 @@ window.Forms = (() => {
       UI.clear(headBox);
       headBox.append(h('p', { class: 'muted' }, 'Загружаем карточку…'));
       try {
-        const [pas, inv, tsk, ins, dfs, ren] = await Promise.all([
+        const [pas, inv, tsk, ins, dfs, ren, gls] = await Promise.all([
           Journal.serviceRead(CONFIG.SERVICE_PASSPORT_SHEET),
           Journal.serviceRead(CONFIG.SERVICE_INVENTORY_SHEET),
           Journal.serviceRead(CONFIG.SERVICE_TASKS_SHEET),
           Journal.serviceRead(CONFIG.SERVICE_INSTRUCTIONS_SHEET),
           Journal.serviceRead(CONFIG.SERVICE_DEFECTS_SHEET),
           Journal.serviceRead(CONFIG.SERVICE_RENOVATION_SHEET),
+          isManager
+            ? Journal.serviceRead(CONFIG.GUEST_LINKS_SHEET)
+            : Promise.resolve({ records: [] }),
         ]);
         const pRec = pas.records.find((r) => r.data['id_объекта'] === flatId);
         passport = pRec ? pRec.data : {};
@@ -7133,6 +7384,9 @@ window.Forms = (() => {
             String(d['id_дефекта'] || '').trim());
         renovation = ren.records.map((r) => r.data)
           .filter((d) => d['id_объекта'] === flatId);
+        guestLinks = gls.records.map((r) => r.data)
+          .filter((d) => d['id_объекта'] === flatId &&
+            String(d['id_ссылки'] || '').trim());
       } catch (err) {
         console.error('Карточка квартиры:', err);
         UI.clear(headBox);
@@ -7141,12 +7395,13 @@ window.Forms = (() => {
         return;
       }
       renderHead(); renderPassport(); renderInstructions();
-      renderInventory(); renderRenovation(); renderDefects(); renderTasks();
+      renderInventory(); renderRenovation(); renderDefects();
+      renderGuestLinks(); renderTasks();
     }
     load();
     Queue.onCommitted((item) => {
       if (item && ['сервис_задача', 'сервис_опись_добавление',
-        'сервис_инструкция', 'сервис_дефект']
+        'сервис_инструкция', 'сервис_дефект', 'гостевая_ссылка']
         .includes(item.formType) && document.body.contains(content)) load();
     });
 
