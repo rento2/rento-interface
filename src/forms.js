@@ -6327,7 +6327,12 @@ window.Forms = (() => {
       if (opt === 'long') {
         inp = textarea(FIELD_PLACEHOLDER[k] || '');
       } else if (opt === 'num') {
-        inp = numberInput();
+        // Не type="number": лист отдаёт числа в ru-формате («43,7»),
+        // невалидная строка там молча даёт пустой инпут — и «Сохранить»
+        // секции затирал бы значение в листе (REVIEW-P, Б-1).
+        inp = h('input',
+          { class: 'field-input', type: 'text', inputmode: 'decimal' });
+        inp._decimal = true;
       } else if (opt === 'time') {
         inp = h('input', { class: 'field-input', type: 'time' });
       } else if (Array.isArray(opt)) {
@@ -6341,6 +6346,13 @@ window.Forms = (() => {
         inp = textInput(FIELD_PLACEHOLDER[k] || '');
       }
       inp.value = value;
+      // Страховка как у селектов: контрол не принял значение листа
+      // (time и будущие типы) — показываем как есть, чтобы «Сохранить»
+      // его не затёр.
+      if (value && !inp.value) {
+        inp = textInput('');
+        inp.value = value;
+      }
       return inp;
     }
 
@@ -6377,7 +6389,13 @@ window.Forms = (() => {
           });
           grid.append(mkBtn('Сохранить', () => {
             const patch = { 'обновлено_кем': myId, 'обновлено_когда': logStamp() };
-            fields.forEach(([k]) => { patch[k] = inputs[k].value.trim(); });
+            fields.forEach(([k]) => {
+              let v = inputs[k].value.trim();
+              // Десятичная точка в ru-локали листа легла бы текстом
+              // (USER_ENTERED), запятая парсится числом.
+              if (inputs[k]._decimal) v = v.replace(/\./g, ',');
+              patch[k] = v;
+            });
             Object.assign(passport, patch);
             Queue.add('сервис_паспорт', {
               objId: flatId, patch, actorId: myId, logTimestamp: logStamp(),
@@ -7403,7 +7421,7 @@ window.Forms = (() => {
     // Категория строки с маппингом легаси-значений (текстиль, прочее).
     function catOf(i) {
       const c = String(i['категория'] || '').trim();
-      return CATS.includes(c) ? c : (CAT_LEGACY[c] || 'быт и уют');
+      return CATS.includes(c) ? c : (CAT_LEGACY[c] || 'предметы быта');
     }
     function customZones() {
       return [...new Set(inventory
