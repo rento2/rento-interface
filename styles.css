@@ -1379,6 +1379,117 @@ body {
   .flat-passport-row { grid-template-columns: 1fr; gap: 2px; }
 }
 
+/* Паспорт квартиры v2 (ADR-036): секции-аккордеоны, индикатор
+   заполненности, опись по группам/зонам, инструкции, дефекты, ремонт. */
+.fp-fill { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.fp-fill-row { display: flex; justify-content: space-between; align-items: baseline; }
+.fp-fill-val { font-size: 15px; font-weight: 800; }
+.fp-bar { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.fp-bar i { display: block; height: 100%; background: var(--lime-500); border-radius: 4px; }
+.fp-miss { font-size: 12.5px; }
+
+.fp-sec {
+  background: var(--surface-0); border: 1px solid var(--border);
+  border-radius: 16px; overflow: hidden;
+}
+.fp-sec-head {
+  list-style: none; cursor: pointer; padding: 13px 16px;
+  display: flex; align-items: center; gap: 10px;
+}
+.fp-sec-head::-webkit-details-marker { display: none; }
+.fp-sec-title { font-size: 15px; font-weight: 700; flex: 1; }
+.fp-sec-badge {
+  font-size: 12px; font-weight: 600; color: var(--text-2);
+  background: var(--surface-2); border-radius: 999px; padding: 2px 9px;
+  white-space: nowrap;
+}
+.fp-sec-arrow { color: var(--text-3); font-size: 12px; transition: transform 0.15s; }
+.fp-sec[open] .fp-sec-arrow { transform: rotate(90deg); }
+.fp-sec-body { padding: 4px 16px 16px; border-top: 1px dashed var(--border); padding-top: 12px; }
+
+.fp-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
+.fp-fact { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.fp-fact-wide { grid-column: 1 / -1; }
+.fp-fact-label { font-size: 11.5px; color: var(--text-3); }
+.fp-fact-val { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.fp-fact-val.fp-empty { color: var(--text-3); font-weight: 400; font-style: italic; }
+.fp-secret {
+  align-self: flex-start; border: 1px dashed var(--border);
+  background: var(--surface-1); border-radius: 8px; padding: 2px 10px;
+  font-size: 14px; font-weight: 700; letter-spacing: 1px;
+  font-family: inherit; cursor: pointer;
+}
+.fp-secret-open { border-style: solid; background: var(--lime-50); letter-spacing: 0; }
+
+.fp-chip {
+  display: inline-flex; align-items: center; font-size: 11px;
+  font-weight: 700; padding: 2px 8px; border-radius: 999px;
+  background: var(--surface-2); color: var(--text-2);
+  border: 1px solid var(--border); white-space: nowrap;
+}
+.fp-chip-guest { background: var(--lime-50); color: var(--lime-700); border-color: transparent; }
+.fp-chip-team { background: var(--ink); color: var(--surface-1); border-color: transparent; }
+.fp-chip-top { background: var(--lime-50); color: var(--lime-700); border-color: transparent; }
+.fp-chip-ok { background: #e8f7ee; color: var(--success); border-color: transparent; }
+.fp-chip-warn { background: #fdf3e3; color: var(--warning); border-color: transparent; }
+.fp-chip-bad { background: #fdecec; color: var(--error); border-color: transparent; }
+
+.fp-instr {
+  border: 1px solid var(--border); border-radius: 12px;
+  padding: 10px 12px; background: var(--surface-1); margin-top: 8px;
+  display: flex; flex-direction: column; gap: 4px; cursor: pointer;
+}
+.fp-instr-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.fp-instr-link { font-size: 11px; color: var(--text-3); }
+.fp-instr-title { font-size: 14px; font-weight: 700; }
+.fp-instr-text { font-size: 13px; color: var(--text-body); white-space: pre-wrap; }
+
+.fp-inv-total { margin: 8px 0 4px; font-size: 13.5px; font-weight: 700; }
+.fp-inv-flags {
+  background: var(--lime-50); border-radius: 12px; padding: 10px 12px;
+  margin: 8px 0; font-size: 13px;
+}
+.fp-inv-flags p { margin: 4px 0 0; }
+.fp-inv-zone {
+  margin: 8px 0 0; font-size: 12px; font-weight: 600;
+  color: var(--lime-700);
+}
+
+.fp-reno-row {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 8px 10px; background: var(--surface-1); border-radius: 10px;
+  margin-top: 6px; cursor: pointer;
+}
+.fp-reno-zone { font-weight: 600; min-width: 90px; }
+.fp-reno-note { font-size: 12.5px; }
+.fp-reno-row .kb-details { flex-basis: 100%; cursor: default; }
+
+.fp-def {
+  border: 1px solid var(--border); border-left: 4px solid var(--text-3);
+  border-radius: 12px; padding: 10px 12px; background: var(--surface-1);
+  margin-top: 8px; display: flex; flex-direction: column; gap: 4px;
+}
+.fp-def-work { border-left-color: var(--warning); }
+.fp-def-fixed { border-left-color: var(--success); opacity: 0.75; }
+.fp-def-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fp-def-title { font-size: 14px; font-weight: 700; flex: 1; min-width: 160px; }
+.fp-def-meta { font-size: 12px; }
+
+.fp-cl { margin: 6px 0 2px 24px; display: flex; flex-direction: column; gap: 2px; }
+.fp-cl-item {
+  display: flex; gap: 8px; align-items: baseline; font-size: 13px;
+  cursor: pointer; padding: 2px 0;
+}
+.fp-cl-done { color: var(--text-3); text-decoration: line-through; }
+.fp-cl-mark { flex-shrink: 0; }
+
+@media (max-width: 640px) {
+  .fp-facts { grid-template-columns: 1fr; }
+  .fp-sec-head { padding: 12px 14px; }
+  .fp-sec-body { padding-left: 14px; padding-right: 14px; }
+  .fp-reno-zone { min-width: 72px; }
+}
+
 /* Архив подтверждённых задач (ADR-034): месяцы со сводкой + строки. */
 .kb-archive { display: flex; flex-direction: column; gap: 8px; }
 .kb-archive-month { margin-top: 16px; }

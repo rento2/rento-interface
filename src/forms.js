@@ -5959,7 +5959,7 @@ window.Forms = (() => {
 
     return Screens.formScreen({
       employee, title: 'Паспорт квартиры',
-      subtitle: 'Выберите квартиру: паспорт, опись, улучшения.',
+      subtitle: 'Выберите квартиру: паспорт, опись, задачи.',
       breadcrumb: 'Сервис',
       content: form,
       onBack: () => opts.onExit(),
@@ -5982,22 +5982,114 @@ window.Forms = (() => {
     const supervisor = executor && role === 'супервайзер';
     const canEdit = isManager || role === 'супервайзер';
 
-    const PASSPORT_FIELDS = [
-      ['ключей_всего', 'Ключей всего'],
-      ['ключи_где', 'Где ключи'],
-      ['код_подъезда', 'Код подъезда'],
-      ['код_замка', 'Код замка/сейфа'],
-      ['прочие_доступы', 'Прочие доступы'],
-      ['как_убирать', 'Как убирать'],
-      ['на_что_смотреть', 'На что обращать внимание'],
+    // ADR-036: паспорт — секции фактов. Поле: [ключ, подпись, опция];
+    // 'long' — textarea, 'secret' — значение скрыто до тапа (коды,
+    // пароли; в листе видны всем ролям — ADR-035 п.4, тут только UX).
+    const PASSPORT_SECTIONS = [
+      ['дом', 'Дом и объект', [
+        ['комнат', 'Комнат'], ['площадь_м²', 'Площадь, м²'],
+        ['этаж', 'Этаж'], ['этажей_в_доме', 'Этажей в доме'],
+        ['лифт', 'Лифт'], ['вид_из_окна', 'Вид из окна'],
+        ['кадастровый_номер', 'Кадастровый номер'], ['парковка', 'Парковка'],
+      ]],
+      ['правила', 'Вместимость и правила', [
+        ['макс_гостей', 'Макс. гостей'], ['мин_возраст', 'Мин. возраст заезда'],
+        ['заезд_с', 'Заезд с'], ['выезд_до', 'Выезд до'],
+        ['залог_₽', 'Залог ₽'], ['дети', 'Дети'],
+        ['питомцы', 'Питомцы'], ['курение', 'Курение'],
+        ['вечеринки', 'Вечеринки'],
+        ['отчётные_документы', 'Отчётные документы'],
+        ['помесячная_аренда', 'Помесячная аренда'],
+      ], 'Блок один в один уходит в «Правила» на сайте и Авито.'],
+      ['доступ', 'Доступ и заселение', [
+        ['ключей_всего', 'Ключей всего'], ['ключи_где', 'Где ключи'],
+        ['код_подъезда', 'Код подъезда', 'secret'],
+        ['код_замка', 'Код замка/сейфа', 'secret'],
+        ['тип_замка', 'Тип замка'],
+        ['бесконтактное_заселение', 'Бесконтактное заселение'],
+        ['прочие_доступы', 'Прочие доступы'],
+      ]],
+      ['интернет', 'Интернет', [
+        ['wifi_сеть', 'Сеть Wi-Fi'], ['wifi_пароль', 'Пароль Wi-Fi', 'secret'],
+        ['роутер_где', 'Роутер где'],
+      ]],
+      ['инженерка', 'Инженерка и аварийное', [
+        ['электрощиток_где', 'Электрощиток'],
+        ['краны_перекрытия_где', 'Краны перекрытия'],
+        ['счётчики_где', 'Счётчики где'],
+        ['счётчики_период', 'Передача показаний'],
+        ['ук_аварийная', 'УК / аварийная'], ['мусор_куда', 'Мусор куда'],
+      ]],
+      ['уборка', 'Уборка', [
+        ['как_убирать', 'Как убирать', 'long'],
+        ['на_что_смотреть', 'На что обращать внимание', 'long'],
+        ['сушилка_где_ставить', 'Где ставим сушилку'],
+        ['кровать_как_заправлять', 'Как заправляем кровать'],
+        ['химия_где', 'Где храним химию'],
+        ['бельё_запас_где', 'Где запасное бельё'],
+        ['бельё_гостям_где', 'Где доп. комплект гостям'],
+        ['полотенца_где', 'Где оставляем полотенца'],
+      ]],
+      ['маркетинг', 'Маркетинг', [
+        ['заголовок_объявления', 'Заголовок объявления'],
+        ['описание_объявления', 'Описание', 'long'],
+        ['ссылка_авито', 'Ссылка на Авито'],
+      ]],
     ];
-    const ZONES = ['кухня', 'комната', 'санузел', 'прихожая', 'балкон', 'прочее'];
-    const CATS = ['мебель', 'техника', 'посуда', 'текстиль', 'расходники', 'прочее'];
+    // Гостевой минимум: «не хватает» в шапке показывает эти дыры
+    // первыми — ровно то, о чём гости спрашивают менеджера.
+    const GUEST_CORE = ['заезд_с', 'выезд_до', 'код_подъезда', 'код_замка',
+      'wifi_сеть', 'wifi_пароль', 'мусор_куда', 'макс_гостей', 'залог_₽'];
+
+    // Опись v2 (ADR-036 п.2): категории уточнены фаундером, зоны
+    // расширяемые. Легаси-значения старых строк маппятся при показе.
+    const CATS = ['мебель', 'техника', 'посуда', 'бельё и полотенца',
+      'быт и уют', 'расходники'];
+    const CAT_LEGACY = { 'текстиль': 'бельё и полотенца', 'прочее': 'быт и уют' };
+    const ZONED_CATS = ['мебель', 'техника', 'быт и уют'];
+    const ZONES = ['прихожая', 'кухня', 'спальня', 'гостиная', 'санузел', 'ванная'];
     const STATES = ['новое', 'хорошее', 'удовлетворительное', 'требует замены'];
+    // тип_позиции — машиночитаемый тип: флаги «Техника» и спальные
+    // места для сайта считаются из описи, галочек в паспорте нет.
+    const ITEM_TYPES = ['кондиционер', 'холодильник', 'плита', 'духовка',
+      'посудомойка', 'стиральная машина', 'сушильная машина',
+      'микроволновка', 'телевизор', 'чайник', 'кофемашина', 'вытяжка',
+      'фен', 'утюг', 'пылесос', 'кровать двуспальная',
+      'кровать односпальная', 'диван раскладной'];
+
+    const INSTR_SECTIONS = ['заселение', 'техника', 'быт', 'уборка',
+      'район', 'аварийное', 'выезд', 'faq'];
+    const DEF_ORIGINS = ['приёмка', 'гость', 'обход', 'уборка'];
+    const RENO_STATES = ['отлично', 'хорошо', 'устало', 'требует ремонта'];
+
+    // Чек-лист задачи — формат ячейки как на доске: «[x] пункт».
+    function cardParseChecklist(s) {
+      return String(s || '').split('\n')
+        .map((l) => l.trim()).filter(Boolean)
+        .map((l) => {
+          const m = /^\[([ xX])\]\s*(.*)$/.exec(l);
+          return m ? { done: m[1] !== ' ', text: m[2] }
+            : { done: false, text: l };
+        });
+    }
+    function cardSerializeChecklist(items) {
+      return items.map((i) => (i.done ? '[x] ' : '[ ] ') + i.text).join('\n');
+    }
+    function pluralPos(n) {
+      const m10 = n % 10;
+      const m100 = n % 100;
+      return m10 === 1 && m100 !== 11 ? 'позиция'
+        : (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)
+          ? 'позиции' : 'позиций');
+    }
 
     let passport = {};
     let inventory = [];
     let tasks = [];
+    let instructions = [];
+    let defects = [];
+    let renovation = [];
+    const revealed = {};  // secret-поля, раскрытые тапом в этой сессии
     const executorsById = svcExecutorsById();
     const personName = {};
     Cache.serviceExecutors().forEach((r) => {
@@ -6009,19 +6101,33 @@ window.Forms = (() => {
 
     const headBox = h('div');
     const passportBox = h('div');
-    const tasksBox = h('div');
+    const instrBox = h('div');
     const invBox = h('div');
+    const renoBox = h('div');
+    const defBox = h('div');
+    const tasksBox = h('div');
     const content = h('div', { class: 'flat-card' },
-      headBox, passportBox, tasksBox, invBox);
+      headBox, passportBox, instrBox, invBox, renoBox, defBox, tasksBox);
 
     function logStamp() { return new Date().toISOString(); }
 
     // ------------------------------ шапка -------------------------------
+    // Все фактовые поля — для индикатора заполненности паспорта.
+    const ALL_FACT_FIELDS = [];
+    PASSPORT_SECTIONS.forEach((s) => s[2].forEach((f) => ALL_FACT_FIELDS.push(f)));
+    const fieldLabel = {};
+    ALL_FACT_FIELDS.forEach(([k, label]) => { fieldLabel[k] = label; });
+
     function renderHead() {
       UI.clear(headBox);
       const act = inventory.filter((i) => String(i['статус'] || 'актуальна') !== 'выбыла');
       const bad = act.filter((i) => i['состояние'] === 'требует замены').length;
-      const rento = act.filter((i) => i['принадлежность'] === 'Ренто').length;
+      const filled = ALL_FACT_FIELDS.filter(
+        ([k]) => String(passport[k] || '').trim()).length;
+      const pct = Math.round(100 * filled / ALL_FACT_FIELDS.length);
+      const missing = GUEST_CORE
+        .filter((k) => !String(passport[k] || '').trim())
+        .slice(0, 4).map((k) => fieldLabel[k] || k);
       headBox.append(
         h('div', { class: 'greet-row' },
           h('h1', { class: 'h1' }, flat['название_короткое'] || flatId),
@@ -6029,84 +6135,490 @@ window.Forms = (() => {
             ? h('span', { class: 'role-chip' }, '★ ' + passport['оценка']) : ''),
         h('p', { class: 'muted' },
           (flat['адрес'] || '') + ' · ' + (flat['статус'] || '') + ' · ' +
-          'позиций: ' + act.length + ' (Ренто ' + rento + ') · ' +
-          'требует замены: ' + bad));
+          'позиций: ' + act.length + ' · требует замены: ' + bad),
+        h('div', { class: 'fp-fill' },
+          h('div', { class: 'fp-fill-row' },
+            h('span', { class: 'eyebrow' }, 'ПАСПОРТ ЗАПОЛНЕН'),
+            h('span', { class: 'fp-fill-val' }, pct + '%')),
+          h('div', { class: 'fp-bar' },
+            h('i', { style: 'width:' + pct + '%' })),
+          missing.length ? h('p', { class: 'muted fp-miss' },
+            'Не хватает: ' + missing.join(' · ')) : ''));
     }
 
-    // ----------------------------- паспорт ------------------------------
+    // ------------------- паспорт: секции-аккордеоны ---------------------
+    const secOpen = {};  // открытость аккордеонов между перерисовками
+
+    function mkBtn(label, fn, cls) {
+      const btn = h('button',
+        { class: 'kb-move-btn' + (cls ? ' ' + cls : ''), type: 'button' }, label);
+      btn.addEventListener('click', fn);
+      return btn;
+    }
+
+    function sectionDetails(key, title, badge) {
+      const det = h('details', { class: 'fp-sec' });
+      if (secOpen[key]) det.open = true;
+      det.addEventListener('toggle', () => { secOpen[key] = det.open; });
+      det.append(h('summary', { class: 'fp-sec-head' },
+        h('span', { class: 'fp-sec-title' }, title),
+        badge ? h('span', { class: 'fp-sec-badge' }, badge) : '',
+        h('span', { class: 'fp-sec-arrow' }, '▸')));
+      return det;
+    }
+
+    function secretSpan(key, value) {
+      const btn = h('button', {
+        class: 'fp-secret' + (revealed[key] ? ' fp-secret-open' : ''),
+        type: 'button',
+      }, revealed[key] ? value : '••••');
+      btn.addEventListener('click', () => {
+        revealed[key] = !revealed[key];
+        renderPassport();
+      });
+      return btn;
+    }
+
+    function sectionEditor(title, fields) {
+      const wrap = h('div');
+      const editBtn = h('button', { class: 'kb-move-btn', type: 'button' },
+        '✎ Изменить');
+      const area = h('div', { class: 'kb-details', style: 'display:none' });
+      const inputs = {};
+      fields.forEach(([k, label, opt]) => {
+        const inp = opt === 'long' ? textarea(label) : textInput(label);
+        inp.value = passport[k] || '';
+        inputs[k] = inp;
+        area.append(field(label, inp));
+      });
+      const saveBtn = h('button', { class: 'kb-move-btn kb-save', type: 'button' },
+        'Сохранить');
+      saveBtn.addEventListener('click', () => {
+        const patch = { 'обновлено_кем': myId, 'обновлено_когда': logStamp() };
+        fields.forEach(([k]) => { patch[k] = inputs[k].value.trim(); });
+        Object.assign(passport, patch);
+        Queue.add('сервис_паспорт', {
+          objId: flatId, patch, actorId: myId, logTimestamp: logStamp(),
+          shortDesc: 'Паспорт ' + flatId + ': раздел «' + title + '»',
+        });
+        renderHead(); renderPassport();
+      });
+      area.append(saveBtn);
+      editBtn.addEventListener('click', () => {
+        area.style.display = area.style.display === 'none' ? '' : 'none';
+      });
+      wrap.append(editBtn, area);
+      return wrap;
+    }
+
     function renderPassport() {
       UI.clear(passportBox);
-      const sec = h('section', { class: 'section' },
-        h('div', { class: 'section-head' },
-          h('span', { class: 'eyebrow' }, 'ПАСПОРТ'),
-          h('h2', { class: 'h2' }, 'Доступы и инструкции')));
-      const view = h('div', { class: 'flat-passport' });
-      let empty = true;
-      PASSPORT_FIELDS.forEach(([key, label]) => {
-        const v = String(passport[key] || '').trim();
-        if (!v) return;
-        empty = false;
-        view.append(h('div', { class: 'flat-passport-row' },
-          h('span', { class: 'muted' }, label), h('span', {}, v)));
-      });
-      if (passport['оценка']) {
-        empty = false;
-        view.append(h('div', { class: 'flat-passport-row' },
-          h('span', { class: 'muted' }, 'Оценка'),
-          h('span', {}, '★ ' + passport['оценка'] +
-            (passport['оценка_комментарий'] ? ' — ' + passport['оценка_комментарий'] : '') +
-            (passport['оценка_когда']
-              ? ' (' + String(passport['оценка_когда']).slice(0, 10) + ')' : ''))));
-      }
-      if (empty) view.append(h('p', { class: 'muted' }, 'Паспорт пока не заполнен.'));
-      sec.append(view);
-
-      if (canEdit) {
-        const editBtn = h('button', { class: 'kb-move-btn', type: 'button' },
-          '✎ Изменить паспорт');
-        const editArea = h('div', { class: 'kb-details', style: 'display:none' });
-        const inputs = {};
-        PASSPORT_FIELDS.forEach(([key, label]) => {
-          const inp = key === 'как_убирать' || key === 'на_что_смотреть'
-            ? textarea(label) : textInput(label);
-          inp.value = passport[key] || '';
-          inputs[key] = inp;
-          editArea.append(field(label, inp));
+      PASSPORT_SECTIONS.forEach(([key, title, fields, hint]) => {
+        const filled = fields.filter(
+          ([k]) => String(passport[k] || '').trim()).length;
+        const det = sectionDetails('f_' + key, title,
+          filled + '/' + fields.length);
+        const body = h('div', { class: 'fp-sec-body' });
+        const grid = h('div', { class: 'fp-facts' });
+        fields.forEach(([k, label, opt]) => {
+          const v = String(passport[k] || '').trim();
+          grid.append(h('div',
+            { class: 'fp-fact' + (opt === 'long' ? ' fp-fact-wide' : '') },
+            h('span', { class: 'fp-fact-label' }, label),
+            (opt === 'secret' && v) ? secretSpan(k, v)
+              : h('span', { class: 'fp-fact-val' + (v ? '' : ' fp-empty') },
+                v || 'не заполнено')));
         });
+        body.append(grid);
+        if (hint) body.append(h('p', { class: 'field-hint' }, hint));
+        if (key === 'уборка') appendCleaningItems(body);
+        if (canEdit) body.append(sectionEditor(title, fields));
+        det.append(body);
+        passportBox.append(det);
+      });
+      passportBox.append(scoreSection());
+    }
+
+    function scoreSection() {
+      const det = sectionDetails('f_оценка', 'Оценка квартиры',
+        passport['оценка'] ? '★ ' + passport['оценка'] : '—');
+      const body = h('div', { class: 'fp-sec-body' });
+      if (passport['оценка']) {
+        body.append(h('p', {}, '★ ' + passport['оценка'] +
+          (passport['оценка_комментарий']
+            ? ' — ' + passport['оценка_комментарий'] : '') +
+          (passport['оценка_когда']
+            ? ' (' + String(passport['оценка_когда']).slice(0, 10) + ')' : '')));
+      } else {
+        body.append(h('p', { class: 'muted' }, 'Оценки пока нет.'));
+      }
+      if (canEdit) {
         const scoreSelect = selectInput();
         fillSelect(scoreSelect, ['1', '2', '3', '4', '5'].map(
           (v) => ({ value: v, text: '★ ' + v })), 'Оценка…');
         scoreSelect.value = passport['оценка'] || '';
         const scoreComment = textInput('Комментарий к оценке');
         scoreComment.value = passport['оценка_комментарий'] || '';
-        editArea.append(field('Оценка квартиры', scoreSelect),
-          field('Комментарий', scoreComment));
-        const saveBtn = h('button', { class: 'kb-move-btn kb-save', type: 'button' },
-          'Сохранить паспорт');
-        saveBtn.addEventListener('click', () => {
-          const patch = { 'обновлено_кем': myId, 'обновлено_когда': logStamp() };
-          PASSPORT_FIELDS.forEach(([key]) => { patch[key] = inputs[key].value.trim(); });
-          if (scoreSelect.value !== String(passport['оценка'] || '') ||
-              scoreComment.value.trim() !== String(passport['оценка_комментарий'] || '')) {
-            patch['оценка'] = scoreSelect.value;
-            patch['оценка_комментарий'] = scoreComment.value.trim();
-            patch['оценка_кем'] = myId;
-            patch['оценка_когда'] = logStamp();
-          }
-          Object.assign(passport, patch);
-          Queue.add('сервис_паспорт', {
-            objId: flatId, patch, actorId: myId, logTimestamp: logStamp(),
-            shortDesc: 'Паспорт квартиры ' + flatId + ' обновлён',
-          });
-          renderHead(); renderPassport();
-        });
-        editArea.append(saveBtn);
-        editBtn.addEventListener('click', () => {
-          editArea.style.display = editArea.style.display === 'none' ? '' : 'none';
-        });
-        sec.append(editBtn, editArea);
+        body.append(field('Оценка квартиры', scoreSelect),
+          field('Комментарий', scoreComment),
+          mkBtn('Сохранить оценку', () => {
+            const patch = {
+              'оценка': scoreSelect.value,
+              'оценка_комментарий': scoreComment.value.trim(),
+              'оценка_кем': myId,
+              'оценка_когда': logStamp(),
+              'обновлено_кем': myId,
+              'обновлено_когда': logStamp(),
+            };
+            Object.assign(passport, patch);
+            Queue.add('сервис_паспорт', {
+              objId: flatId, patch, actorId: myId, logTimestamp: logStamp(),
+              shortDesc: 'Паспорт ' + flatId + ': оценка ' + scoreSelect.value,
+            });
+            renderHead(); renderPassport();
+          }, 'kb-save'));
       }
-      passportBox.append(sec);
+      det.append(body);
+      return det;
+    }
+
+    // --------------------------- инструкции ------------------------------
+    function instrChip(text, cls) {
+      return h('span', { class: 'fp-chip' + (cls ? ' ' + cls : '') }, text);
+    }
+
+    function instrRow(d) {
+      const row = h('div', { class: 'fp-instr' },
+        h('div', { class: 'fp-instr-top' },
+          instrChip(d['раздел'] || 'быт'),
+          instrChip(d['аудитория'] === 'гость' ? 'гость' : 'команда',
+            d['аудитория'] === 'гость' ? 'fp-chip-guest' : 'fp-chip-team'),
+          d['id_позиции']
+            ? h('span', { class: 'fp-instr-link' }, '→ ' + d['id_позиции']) : ''),
+        h('div', { class: 'fp-instr-title' }, d['заголовок'] || ''),
+        h('div', { class: 'fp-instr-text' },
+          (d['текст'] || '') + (d._pending ? ' (отправляется…)' : '')));
+      if (canEdit && !d._pending) {
+        const area = h('div', { class: 'kb-details', style: 'display:none' });
+        const titleInp = textInput('Заголовок');
+        titleInp.value = d['заголовок'] || '';
+        const textInp = textarea('Текст');
+        textInp.value = d['текст'] || '';
+        const audSel = selectInput();
+        fillSelect(audSel, [
+          { value: 'гость', text: 'видит гость' },
+          { value: 'команда', text: 'только команда' }]);
+        audSel.value = d['аудитория'] || 'команда';
+        const patchInstr = (patch, desc) => {
+          Object.assign(d, patch);
+          Queue.add('сервис_инструкция_правка', {
+            itemId: d['id_инструкции'],
+            patch: { ...patch, 'обновлено_кем': myId, 'обновлено_когда': logStamp() },
+            actorId: myId, logTimestamp: logStamp(), shortDesc: desc,
+          });
+          renderPassport(); renderInstructions();
+        };
+        area.append(field('Заголовок', titleInp), field('Текст', textInp),
+          field('Кому видно', audSel),
+          h('div', { class: 'kb-moves' },
+            mkBtn('Сохранить', () => patchInstr({
+              'заголовок': titleInp.value.trim(),
+              'текст': textInp.value.trim(),
+              'аудитория': audSel.value,
+            }, 'Инструкция ' + d['id_инструкции'] + ' — правка'), 'kb-save'),
+            mkBtn('✕ Скрыть', () => {
+              if (!confirm('Скрыть блок «' + (d['заголовок'] || '') +
+                '»? Строка останется в листе со статусом «удалена».')) return;
+              patchInstr({ 'статус': 'удалена' },
+                'Инструкция ' + d['id_инструкции'] + ' — скрыта');
+            })));
+        row.addEventListener('click', (e) => {
+          if (e.target.closest('.kb-details')) return;
+          area.style.display = area.style.display === 'none' ? '' : 'none';
+        });
+        row.append(area);
+      }
+      return row;
+    }
+
+    function instrAddForm(preset) {
+      const secSel = selectInput();
+      fillSelect(secSel, INSTR_SECTIONS.map(
+        (s) => ({ value: s, text: s })), 'Раздел…');
+      const audSel = selectInput();
+      fillSelect(audSel, [
+        { value: 'гость', text: 'видит гость' },
+        { value: 'команда', text: 'только команда' }], 'Кому видно…');
+      if (preset && preset.section) {
+        secSel.value = preset.section;
+        secSel.style.display = 'none';
+      }
+      if (preset && preset.audience) audSel.value = preset.audience;
+      const titleInp = textInput('Заголовок («Духовка: как включить»)');
+      const textInp = textarea('Текст — как напишется, без формализма');
+      const posSel = selectInput();
+      posSel.append(h('option', { value: '' },
+        '— позиция описи (не обязательно) —'));
+      inventory.filter((i) =>
+        String(i['статус'] || 'актуальна') !== 'выбыла' && i['id_позиции'])
+        .forEach((i) => posSel.append(h('option',
+          { value: i['id_позиции'] }, i['название'] || i['id_позиции'])));
+      const err = h('div', { class: 'field-error', style: 'display:none' });
+      const addBtn = mkBtn((preset && preset.label) || '+ Блок', () => {
+        if (!secSel.value || !titleInp.value.trim() ||
+            !textInp.value.trim() || !audSel.value) {
+          err.textContent = 'Заполните раздел, заголовок, текст и «кому видно».';
+          err.style.display = '';
+          return;
+        }
+        err.style.display = 'none';
+        const row = {
+          'id_объекта': flatId,
+          'раздел': secSel.value,
+          'заголовок': titleInp.value.trim(),
+          'текст': textInp.value.trim(),
+          'аудитория': audSel.value,
+          'id_позиции': posSel.value,
+          'статус': 'активна',
+          'обновлено_кем': myId,
+          'обновлено_когда': logStamp(),
+        };
+        Queue.add('сервис_инструкция', {
+          row, actorId: myId, logTimestamp: logStamp(),
+          shortDesc: 'Инструкция: ' + flatId + ' — ' + row['заголовок'],
+        });
+        instructions.push({ ...row, 'id_инструкции': '', _pending: true });
+        titleInp.value = ''; textInp.value = ''; posSel.value = '';
+        renderPassport(); renderInstructions();
+      }, 'kb-save');
+      return h('div', { class: 'kb-add' },
+        secSel, audSel, titleInp, textInp, posSel, err, addBtn);
+    }
+
+    function activeInstr() {
+      return instructions.filter((d) =>
+        String(d['статус'] || 'активна') !== 'удалена');
+    }
+
+    function appendCleaningItems(body) {
+      const items = activeInstr().filter((d) => d['раздел'] === 'уборка');
+      if (items.length) {
+        body.append(h('p', { class: 'flat-zone' }, 'СВОИ ПУНКТЫ ЭТОЙ КВАРТИРЫ'));
+        items.forEach((d) => body.append(instrRow(d)));
+      }
+      if (canEdit) {
+        body.append(instrAddForm({
+          section: 'уборка', audience: 'команда', label: '+ Пункт уборки',
+        }));
+      }
+    }
+
+    function renderInstructions() {
+      UI.clear(instrBox);
+      const items = activeInstr().filter((d) => d['раздел'] !== 'уборка');
+      const det = sectionDetails('инструкции', 'Инструкции',
+        String(items.length));
+      const body = h('div', { class: 'fp-sec-body' });
+      if (!items.length) {
+        body.append(h('p', { class: 'muted' },
+          'Пока пусто. Блоки с пометкой «гость» соберутся в путь гостя, ' +
+          'их же читает ИИ-агент.'));
+      }
+      items.forEach((d) => body.append(instrRow(d)));
+      if (canEdit) body.append(instrAddForm());
+      det.append(body);
+      instrBox.append(det);
+    }
+
+    // ------------------------ состояние ремонта --------------------------
+    function renoCls(state) {
+      return state === 'отлично' ? 'fp-chip-top'
+        : state === 'хорошо' ? 'fp-chip-ok'
+          : state === 'устало' ? 'fp-chip-warn'
+            : state === 'требует ремонта' ? 'fp-chip-bad' : '';
+    }
+
+    function renderRenovation() {
+      UI.clear(renoBox);
+      const mine = renovation.filter((r) => r['id_объекта'] === flatId);
+      const byZone = {};
+      mine.forEach((r) => { byZone[r['зона']] = r; });
+      const rated = mine.filter((r) => r['состояние']).length;
+      const det = sectionDetails('ремонт', 'Состояние ремонта',
+        rated ? rated + ' из ' + ZONES.length : '—');
+      const body = h('div', { class: 'fp-sec-body' });
+      const zones = ZONES.concat(mine.map((r) => String(r['зона'] || ''))
+        .filter((z) => z && !ZONES.includes(z)));
+      zones.forEach((z) => {
+        const rec = byZone[z] || {};
+        const row = h('div', { class: 'fp-reno-row' },
+          h('span', { class: 'fp-reno-zone' }, z),
+          rec['состояние']
+            ? h('span', { class: 'fp-chip ' + renoCls(rec['состояние']) },
+              rec['состояние'])
+            : h('span', { class: 'muted' }, '—'),
+          rec['комментарий']
+            ? h('span', { class: 'muted fp-reno-note' }, rec['комментарий']) : '');
+        if (canEdit) {
+          const area = h('div', { class: 'kb-details', style: 'display:none' });
+          const stSel = selectInput();
+          fillSelect(stSel, RENO_STATES.map(
+            (s) => ({ value: s, text: s })), 'Состояние…');
+          stSel.value = rec['состояние'] || '';
+          const noteInp = textInput('Комментарий');
+          noteInp.value = rec['комментарий'] || '';
+          area.append(field('Состояние', stSel), field('Комментарий', noteInp),
+            mkBtn('Сохранить', () => {
+              if (!stSel.value) return;
+              const patch = {
+                'состояние': stSel.value,
+                'комментарий': noteInp.value.trim(),
+                'обновлено_кем': myId,
+                'обновлено_когда': logStamp(),
+              };
+              if (byZone[z]) Object.assign(byZone[z], patch);
+              else renovation.push({ 'id_объекта': flatId, 'зона': z, ...patch });
+              Queue.add('сервис_ремонт', {
+                objId: flatId, zone: z, patch, actorId: myId,
+                logTimestamp: logStamp(),
+                shortDesc: 'Ремонт ' + flatId + ' / ' + z + ': ' + stSel.value,
+              });
+              renderRenovation();
+            }, 'kb-save'));
+          row.addEventListener('click', (e) => {
+            if (e.target.closest('.kb-details')) return;
+            area.style.display = area.style.display === 'none' ? '' : 'none';
+          });
+          row.append(area);
+        }
+        body.append(row);
+      });
+      body.append(h('p', { class: 'field-hint' },
+        '«Устало» и хуже — повод для задачи и аргумент в разговоре ' +
+        'с собственником.'));
+      det.append(body);
+      renoBox.append(det);
+    }
+
+    // ------------------------------ дефекты ------------------------------
+    function defRow(d) {
+      const st = String(d['статус'] || 'принят');
+      const row = h('div', {
+        class: 'fp-def' + (st === 'в_работе' ? ' fp-def-work'
+          : st === 'устранён' ? ' fp-def-fixed' : ''),
+      },
+        h('div', { class: 'fp-def-top' },
+          h('span', { class: 'fp-def-title' }, d['описание'] || ''),
+          h('span', {
+            class: 'fp-chip ' + (st === 'в_работе' ? 'fp-chip-warn'
+              : st === 'устранён' ? 'fp-chip-ok' : ''),
+          }, st.replace('_', ' '))),
+        h('div', { class: 'muted fp-def-meta' },
+          [d['происхождение'], String(d['дата_создания'] || '').slice(0, 10),
+            d['зона'],
+            d['видно_гостю'] === 'да' ? 'гостю: видно' : 'гостю: скрыто',
+            d['id_задачи'] ? '→ ' + d['id_задачи'] : '']
+            .filter(Boolean).join(' · ') +
+          (d._pending ? ' · отправляется…' : '')));
+      if (canEdit && !d._pending) {
+        const btns = h('div', { class: 'kb-moves' });
+        const patchDef = (p, desc) => {
+          Object.assign(d, p);
+          Queue.add('сервис_дефект_правка', {
+            itemId: d['id_дефекта'],
+            patch: { ...p, 'обновлено_кем': myId, 'обновлено_когда': logStamp() },
+            actorId: myId, logTimestamp: logStamp(), shortDesc: desc,
+          });
+          renderDefects();
+        };
+        if (st === 'принят') {
+          btns.append(mkBtn('чиним →', () => {
+            const tsk = prompt('id задачи (TSK-…), если уже создана — ' +
+              'можно оставить пустым:') || '';
+            patchDef({ 'статус': 'в_работе', 'id_задачи': tsk.trim() },
+              'Дефект ' + d['id_дефекта'] + ' → в работе');
+          }));
+          btns.append(mkBtn(
+            d['видно_гостю'] === 'да' ? 'скрыть от гостя' : 'показать гостю',
+            () => patchDef(
+              { 'видно_гостю': d['видно_гостю'] === 'да' ? 'нет' : 'да' },
+              'Дефект ' + d['id_дефекта'] + ': видимость гостю')));
+        }
+        if (st === 'в_работе') {
+          btns.append(mkBtn('✓ устранён',
+            () => patchDef({ 'статус': 'устранён' },
+              'Дефект ' + d['id_дефекта'] + ' устранён'), 'kb-save'));
+          btns.append(mkBtn('↩ принят',
+            () => patchDef({ 'статус': 'принят' },
+              'Дефект ' + d['id_дефекта'] + ' → принят')));
+        }
+        row.append(btns);
+      }
+      return row;
+    }
+
+    function defAddForm() {
+      const zoneSel = selectInput();
+      fillSelect(zoneSel, ZONES.map((z) => ({ value: z, text: z })), 'Зона…');
+      const descInp = textInput('Что за дефект («скол на столешнице у мойки»)');
+      const origSel = selectInput();
+      fillSelect(origSel, DEF_ORIGINS.map(
+        (o) => ({ value: o, text: o })), 'Откуда…');
+      const guestSel = selectInput();
+      fillSelect(guestSel, [
+        { value: 'да', text: 'гостю: видно' },
+        { value: 'нет', text: 'гостю: скрыто' }], 'Видно гостю?');
+      const err = h('div', { class: 'field-error', style: 'display:none' });
+      const addBtn = mkBtn('+ Дефект', () => {
+        if (!descInp.value.trim() || !origSel.value || !guestSel.value) {
+          err.textContent = 'Заполните описание, происхождение и видимость.';
+          err.style.display = '';
+          return;
+        }
+        err.style.display = 'none';
+        const row = {
+          'id_объекта': flatId,
+          'зона': zoneSel.value,
+          'описание': descInp.value.trim(),
+          'происхождение': origSel.value,
+          'статус': 'принят',
+          'видно_гостю': guestSel.value,
+          'создал': myId,
+          'дата_создания': logStamp(),
+        };
+        Queue.add('сервис_дефект', {
+          row, actorId: myId, logTimestamp: logStamp(),
+          shortDesc: 'Дефект: ' + flatId + ' — ' + row['описание'].slice(0, 80),
+        });
+        defects.push({ ...row, 'id_дефекта': '', _pending: true });
+        descInp.value = '';
+        renderDefects();
+      }, 'kb-save');
+      return h('div', { class: 'kb-add' },
+        zoneSel, descInp, origSel, guestSel, err, addBtn);
+    }
+
+    function renderDefects() {
+      UI.clear(defBox);
+      const mine = defects.filter((d) => d['id_объекта'] === flatId);
+      const open = mine.filter((d) => String(d['статус'] || 'принят') !== 'устранён');
+      const fixed = mine.filter((d) => String(d['статус']) === 'устранён').slice(-3);
+      const det = sectionDetails('дефекты', 'Дефекты и особенности',
+        String(open.length));
+      const body = h('div', { class: 'fp-sec-body' });
+      if (!open.length && !fixed.length) {
+        body.append(h('p', { class: 'muted' },
+          'Дефектов не записано. «Принят» — знаем и живём, гостю не ' +
+          'предъявляем; «в работе» — из дефекта родилась задача.'));
+      }
+      open.forEach((d) => body.append(defRow(d)));
+      if (fixed.length) {
+        body.append(h('p', { class: 'muted' }, 'Устранённые:'));
+        fixed.forEach((d) => body.append(defRow(d)));
+      }
+      if (canEdit) body.append(defAddForm());
+      det.append(body);
+      defBox.append(det);
     }
 
     // ------------------------ улучшения (задачи) ------------------------
@@ -6165,17 +6677,43 @@ window.Forms = (() => {
       }
       const who = personName[data['id_исполнителя']] ||
         data['id_исполнителя'] || 'не назначен';
+      const clItems = cardParseChecklist(data['чек_лист']);
       const bits = [data['тип_задачи'] || 'сервис'];
       if (data['вид_работы']) bits.push(data['вид_работы']);
       bits.push(who);
+      if (data['срок']) bits.push('срок ' + String(data['срок']).slice(0, 10));
+      if (clItems.length) {
+        bits.push(clItems.filter((x) => x.done).length + '/' + clItems.length);
+      }
       if (data['цена_₽']) bits.push(data['цена_₽'] + ' ₽');
       if (data['ориентировочный_бюджет_₽']) bits.push('~' + data['ориентировочный_бюджет_₽'] + ' ₽');
+      // Чек-лист внутри задачи (ADR-036 п.5): пункт кликается
+      // исполнителем задачи или менеджером; каждая отметка — патч
+      // ячейки чек_лист (TG-пуш по закрытию пункта — прогон rento3).
+      const clBox = h('div', { class: 'fp-cl' });
+      clItems.forEach((it, idx) => {
+        const line = h('div',
+          { class: 'fp-cl-item' + (it.done ? ' fp-cl-done' : '') },
+          h('span', { class: 'fp-cl-mark' }, it.done ? '☑' : '☐'),
+          h('span', {}, it.text));
+        if (movable && !donePart && !data._pending) {
+          line.addEventListener('click', () => {
+            clItems[idx].done = !clItems[idx].done;
+            taskPatch(data, { 'чек_лист': cardSerializeChecklist(clItems) },
+              'редактирование',
+              'Задача ' + data['id_задачи'] + ': чек-лист ' +
+              clItems.filter((x) => x.done).length + '/' + clItems.length);
+          });
+        }
+        clBox.append(line);
+      });
       return h('div', { class: 'flat-task' + (donePart ? ' flat-task-done' : '') },
         h('div', { class: 'flat-task-line' },
           h('span', { class: 'flat-task-mark' }, mark),
           h('span', { class: 'flat-task-desc' },
             (data['описание'] || '') + (data._pending ? ' (отправляется…)' : '')),
           h('span', { class: 'muted' }, bits.join(' · '))),
+        clItems.length ? clBox : '',
         btns);
     }
 
@@ -6209,13 +6747,15 @@ window.Forms = (() => {
         text: w.label + (w.price ? ' — ' + w.price + ' ₽' : ''),
       })), 'Вид работы…');
       workSelect.style.display = 'none';
-      const descInput = textInput('Что улучшить / сделать');
+      const descInput = textInput('Что сделать (один повод — одна задача)');
+      const clInput = textarea('Чек-лист: пункт с новой строки (не обязательно)');
+      const dueInput = dateInput();
       const priceInput = numberInput();
       priceInput.placeholder = 'Цена ₽';
       const priceHint = h('div', { class: 'field-hint' });
       const err = h('div', { class: 'field-error', style: 'display:none' });
       const addBtn = h('button', { class: 'kb-move-btn kb-save', type: 'button' },
-        '+ Пункт');
+        '+ Задача');
 
       const isSup = () => {
         const exe = executorsById[respSelect.value];
@@ -6275,6 +6815,10 @@ window.Forms = (() => {
           'id_объекта': flatId,
           'описание': desc,
           'id_исполнителя': respSelect.value,
+          'срок': dueInput.value || '',
+          'чек_лист': clInput.value.split('\n')
+            .map((l) => l.trim()).filter(Boolean)
+            .map((l) => '[ ] ' + l).join('\n'),
           'цена_₽': t === 'закупка' ? '' : (num(priceInput.value) || ''),
           'ориентировочный_бюджет_₽':
             t === 'закупка' ? (num(priceInput.value) || '') : '',
@@ -6287,13 +6831,13 @@ window.Forms = (() => {
         });
         tasks.push({ ...row, 'id_задачи': '', _pending: true });
         typeSelect.value = ''; descInput.value = ''; respSelect.value = '';
-        priceInput.value = '';
+        priceInput.value = ''; clInput.value = ''; dueInput.value = '';
         recompute(); renderTasks();
       });
 
       return h('div', { class: 'kb-add' },
         typeSelect, cleaningSelect, respSelect, workSelect, descInput,
-        priceInput, priceHint, err, addBtn);
+        clInput, dueInput, priceInput, priceHint, err, addBtn);
     }
 
     function renderTasks() {
@@ -6308,12 +6852,14 @@ window.Forms = (() => {
           String(a['подтверждена'] || ''))).slice(0, 5);
       const sec = h('section', { class: 'section' },
         h('div', { class: 'section-head' },
-          h('span', { class: 'eyebrow' }, 'УЛУЧШЕНИЯ'),
+          h('span', { class: 'eyebrow' }, 'ЗАДАЧИ'),
           h('h2', { class: 'h2' },
             'Задачи квартиры' + (open.length ? ' — ' + open.length : ''))));
       if (isManager || supervisor) sec.append(addTaskForm());
       if (!open.length && !done.length) {
-        sec.append(h('p', { class: 'muted' }, 'Открытых задач нет.'));
+        sec.append(h('p', { class: 'muted' },
+          'Открытых задач нет. Один повод — одна задача с чек-листом; ' +
+          'другой срок — отдельная задача.'));
       }
       open.forEach((d) => sec.append(taskRow(d)));
       if (done.length) {
@@ -6338,9 +6884,9 @@ window.Forms = (() => {
       const line = h('div', { class: 'flat-inv-line' },
         h('span', { class: 'flat-inv-name' },
           (data['название'] || '—') +
-          (num(data['количество']) > 1 ? ' × ' + data['количество'] : '')),
+          ' × ' + (num(data['количество']) || 1)),
         h('span', { class: 'muted' },
-          [data['категория'], data['состояние'], data['принадлежность'],
+          [data['тип_позиции'], data['состояние'], data['принадлежность'],
             data['примечание']].filter(Boolean).join(' · ') +
           (gone ? ' · ВЫБЫЛА ' + String(data['выбыла_когда'] || '').slice(0, 10) : '')));
       const rowEl = h('div', {
@@ -6354,6 +6900,11 @@ window.Forms = (() => {
         const stateSelect = selectInput();
         fillSelect(stateSelect, STATES.map((s) => ({ value: s, text: s })));
         stateSelect.value = data['состояние'] || '';
+        const typeSelect = selectInput();
+        typeSelect.append(h('option', { value: '' }, '— тип (для сайта) —'));
+        ITEM_TYPES.forEach((t) => typeSelect.append(
+          h('option', { value: t }, t)));
+        typeSelect.value = data['тип_позиции'] || '';
         const noteInput = textInput('Примечание');
         noteInput.value = data['примечание'] || '';
         const saveBtn = h('button', { class: 'kb-move-btn kb-save', type: 'button' },
@@ -6361,6 +6912,7 @@ window.Forms = (() => {
         saveBtn.addEventListener('click', () => invPatch(data, {
           'количество': num(qtyInput.value) || 1,
           'состояние': stateSelect.value,
+          'тип_позиции': typeSelect.value,
           'примечание': noteInput.value.trim(),
         }, 'Опись ' + flatId + ': ' + (data['название'] || data['id_позиции']) +
           ' — правка'));
@@ -6375,6 +6927,7 @@ window.Forms = (() => {
           details.style.display = 'none';
         });
         details.append(field('Количество', qtyInput), field('Состояние', stateSelect),
+          field('Тип позиции (флаг на сайт)', typeSelect),
           field('Примечание', noteInput),
           h('div', { class: 'kb-moves' }, saveBtn, dropBtn));
         line.addEventListener('click', () => {
@@ -6385,11 +6938,35 @@ window.Forms = (() => {
       return rowEl;
     }
 
+    // Категория строки с маппингом легаси-значений (текстиль, прочее).
+    function catOf(i) {
+      const c = String(i['категория'] || '').trim();
+      return CATS.includes(c) ? c : (CAT_LEGACY[c] || 'быт и уют');
+    }
+    function customZones() {
+      return [...new Set(inventory
+        .filter((i) => i['id_объекта'] === flatId)
+        .map((i) => String(i['зона'] || '').trim())
+        .filter((z) => z && !ZONES.includes(z)))];
+    }
+
     function addInvForm() {
-      const zoneSelect = selectInput();
-      fillSelect(zoneSelect, ZONES.map((z) => ({ value: z, text: z })), 'Зона…');
       const catSelect = selectInput();
-      fillSelect(catSelect, CATS.map((c) => ({ value: c, text: c })), 'Категория…');
+      fillSelect(catSelect, CATS.map((c) => ({ value: c, text: c })), 'Группа…');
+      const zoneSelect = selectInput();
+      const rebuildZones = () => {
+        UI.clear(zoneSelect);
+        zoneSelect.append(h('option', { value: '' }, 'Зона…'));
+        ZONES.concat(customZones()).forEach((z) =>
+          zoneSelect.append(h('option', { value: z }, z)));
+        zoneSelect.append(h('option', { value: '__new' }, '+ Своя зона…'));
+      };
+      rebuildZones();
+      const newZoneInput = textInput('Название новой зоны («Балкон»)');
+      newZoneInput.style.display = 'none';
+      const typeSelect = selectInput();
+      typeSelect.append(h('option', { value: '' }, 'Тип для сайта (не обязательно)…'));
+      ITEM_TYPES.forEach((t) => typeSelect.append(h('option', { value: t }, t)));
       const nameInput = textInput('Название («Холодильник Bosch», «Комплект белья»)');
       const qtyInput = numberInput();
       qtyInput.placeholder = 'Кол-во';
@@ -6401,20 +6978,36 @@ window.Forms = (() => {
         { value: 'Ренто', text: 'Ренто' }], 'Чьё…');
       const noteInput = textInput('Примечание (серийник, дефекты)');
       const err = h('div', { class: 'field-error', style: 'display:none' });
+      const zoned = () => ZONED_CATS.includes(catSelect.value);
+      const syncZone = () => {
+        zoneSelect.style.display = zoned() ? '' : 'none';
+        newZoneInput.style.display =
+          (zoned() && zoneSelect.value === '__new') ? '' : 'none';
+      };
+      catSelect.addEventListener('change', syncZone);
+      zoneSelect.addEventListener('change', syncZone);
+      syncZone();
       const addBtn = h('button', { class: 'kb-move-btn kb-save', type: 'button' },
         '+ Позиция');
       addBtn.addEventListener('click', () => {
-        if (!zoneSelect.value || !catSelect.value || !nameInput.value.trim() ||
-            !stateSelect.value || !ownSelect.value) {
-          err.textContent = 'Заполните зону, категорию, название, состояние и принадлежность.';
+        let zone = zoneSelect.value === '__new'
+          ? newZoneInput.value.trim() : zoneSelect.value;
+        if (!zoned()) zone = '';
+        if (!catSelect.value || !nameInput.value.trim() ||
+            !stateSelect.value || !ownSelect.value ||
+            (zoned() && !zone)) {
+          err.textContent = zoned()
+            ? 'Заполните группу, зону, название, состояние и принадлежность.'
+            : 'Заполните группу, название, состояние и принадлежность.';
           err.style.display = '';
           return;
         }
         err.style.display = 'none';
         const row = {
           'id_объекта': flatId,
-          'зона': zoneSelect.value,
+          'зона': zoned() ? zone : '',
           'категория': catSelect.value,
+          'тип_позиции': typeSelect.value,
           'название': nameInput.value.trim(),
           'количество': num(qtyInput.value) || 1,
           'состояние': stateSelect.value,
@@ -6430,39 +7023,86 @@ window.Forms = (() => {
         });
         inventory.push({ ...row, 'id_позиции': '', _pending: true });
         nameInput.value = ''; qtyInput.value = ''; noteInput.value = '';
+        newZoneInput.value = ''; typeSelect.value = '';
+        rebuildZones(); syncZone();
         renderHead(); renderInventory();
       });
       return h('div', { class: 'kb-add' },
-        zoneSelect, catSelect, nameInput, qtyInput, stateSelect, ownSelect,
-        noteInput, err, addBtn);
+        catSelect, zoneSelect, newZoneInput, typeSelect, nameInput, qtyInput,
+        stateSelect, ownSelect, noteInput, err, addBtn);
     }
 
     let showGone = false;
     function renderInventory() {
       UI.clear(invBox);
-      const sec = h('section', { class: 'section' },
-        h('div', { class: 'section-head' },
-          h('span', { class: 'eyebrow' }, 'ОПИСЬ'),
-          h('h2', { class: 'h2' }, 'Имущество')));
-      if (canEdit) sec.append(addInvForm());
       const mine = inventory.filter((i) => i['id_объекта'] === flatId);
-      const actual = mine.filter((i) => String(i['статус'] || 'актуальна') !== 'выбыла');
+      const actual = mine.filter(
+        (i) => String(i['статус'] || 'актуальна') !== 'выбыла');
       const gone = mine.filter((i) => String(i['статус']) === 'выбыла');
-      if (!actual.length) sec.append(h('p', { class: 'muted' }, 'Опись пуста.'));
-      ZONES.forEach((z) => {
-        const items = actual.filter((i) => (i['зона'] || 'прочее') === z);
+      const qtySum = (list) =>
+        list.reduce((a, i) => a + (num(i['количество']) || 1), 0);
+      const det = sectionDetails('опись', 'Опись имущества',
+        actual.length ? actual.length + ' · ' + qtySum(actual) + ' шт' : '—');
+      const body = h('div', { class: 'fp-sec-body' });
+      if (canEdit) body.append(addInvForm());
+      const bad = actual.filter(
+        (i) => i['состояние'] === 'требует замены').length;
+      if (actual.length) {
+        body.append(h('p', { class: 'fp-inv-total' },
+          'Всего: ' + actual.length + ' ' + pluralPos(actual.length) +
+          ' · ' + qtySum(actual) + ' шт' +
+          (bad ? ' · требует замены: ' + bad : '')));
+      }
+      // Флаги на сайт — из тип_позиции (ADR-036 п.2, один источник).
+      const types = [...new Set(actual
+        .map((i) => String(i['тип_позиции'] || '').trim())
+        .filter(Boolean))];
+      if (types.length) {
+        body.append(h('div', { class: 'fp-inv-flags' },
+          h('span', { class: 'eyebrow' }, 'НА САЙТ — ИЗ ОПИСИ'),
+          h('p', {}, types.join(' · '))));
+      }
+      if (!actual.length) {
+        body.append(h('p', { class: 'muted' },
+          'Опись пуста. Мебель, техника, быт и уют раскладываются по ' +
+          'зонам; посуда и бельё — общими группами.'));
+      }
+      CATS.forEach((cat) => {
+        const items = actual.filter((i) => catOf(i) === cat);
         if (!items.length) return;
-        sec.append(h('p', { class: 'flat-zone' }, z.toUpperCase()));
-        items.forEach((i) => sec.append(invRow(i)));
+        body.append(h('p', { class: 'flat-zone' },
+          cat.toUpperCase() + ' · ' + items.length + ' ' +
+          pluralPos(items.length) + ' · ' + qtySum(items) + ' шт'));
+        if (ZONED_CATS.includes(cat)) {
+          const zones = ZONES.concat(customZones());
+          zones.forEach((z) => {
+            const inZone = items.filter(
+              (i) => String(i['зона'] || '').trim() === z);
+            if (!inZone.length) return;
+            body.append(h('p', { class: 'fp-inv-zone' }, z));
+            inZone.forEach((i) => body.append(invRow(i)));
+          });
+          const noZone = items.filter(
+            (i) => !String(i['зона'] || '').trim());
+          if (noZone.length) {
+            body.append(h('p', { class: 'fp-inv-zone' }, 'без зоны'));
+            noZone.forEach((i) => body.append(invRow(i)));
+          }
+        } else {
+          items.forEach((i) => body.append(invRow(i)));
+        }
       });
       if (gone.length) {
         const link = h('button', { class: 'link-btn', type: 'button' },
           (showGone ? 'скрыть выбывшие' : 'выбывшие: ' + gone.length));
-        link.addEventListener('click', () => { showGone = !showGone; renderInventory(); });
-        sec.append(link);
-        if (showGone) gone.forEach((i) => sec.append(invRow(i)));
+        link.addEventListener('click', () => {
+          showGone = !showGone; renderInventory();
+        });
+        body.append(link);
+        if (showGone) gone.forEach((i) => body.append(invRow(i)));
       }
-      invBox.append(sec);
+      det.append(body);
+      invBox.append(det);
     }
 
     // ----------------------------- загрузка -----------------------------
@@ -6470,10 +7110,13 @@ window.Forms = (() => {
       UI.clear(headBox);
       headBox.append(h('p', { class: 'muted' }, 'Загружаем карточку…'));
       try {
-        const [pas, inv, tsk] = await Promise.all([
+        const [pas, inv, tsk, ins, dfs, ren] = await Promise.all([
           Journal.serviceRead(CONFIG.SERVICE_PASSPORT_SHEET),
           Journal.serviceRead(CONFIG.SERVICE_INVENTORY_SHEET),
           Journal.serviceRead(CONFIG.SERVICE_TASKS_SHEET),
+          Journal.serviceRead(CONFIG.SERVICE_INSTRUCTIONS_SHEET),
+          Journal.serviceRead(CONFIG.SERVICE_DEFECTS_SHEET),
+          Journal.serviceRead(CONFIG.SERVICE_RENOVATION_SHEET),
         ]);
         const pRec = pas.records.find((r) => r.data['id_объекта'] === flatId);
         passport = pRec ? pRec.data : {};
@@ -6482,6 +7125,14 @@ window.Forms = (() => {
         tasks = tsk.records.map((r) => r.data)
           .filter((d) => d['id_объекта'] === flatId &&
             String(d['id_задачи'] || '').trim());
+        instructions = ins.records.map((r) => r.data)
+          .filter((d) => d['id_объекта'] === flatId &&
+            String(d['id_инструкции'] || '').trim());
+        defects = dfs.records.map((r) => r.data)
+          .filter((d) => d['id_объекта'] === flatId &&
+            String(d['id_дефекта'] || '').trim());
+        renovation = ren.records.map((r) => r.data)
+          .filter((d) => d['id_объекта'] === flatId);
       } catch (err) {
         console.error('Карточка квартиры:', err);
         UI.clear(headBox);
@@ -6489,18 +7140,20 @@ window.Forms = (() => {
           'Не удалось загрузить карточку: ' + ((err && err.message) || 'ошибка') + '.'));
         return;
       }
-      renderHead(); renderPassport(); renderTasks(); renderInventory();
+      renderHead(); renderPassport(); renderInstructions();
+      renderInventory(); renderRenovation(); renderDefects(); renderTasks();
     }
     load();
     Queue.onCommitted((item) => {
-      if (item && ['сервис_задача', 'сервис_опись_добавление']
+      if (item && ['сервис_задача', 'сервис_опись_добавление',
+        'сервис_инструкция', 'сервис_дефект']
         .includes(item.formType) && document.body.contains(content)) load();
     });
 
     return Screens.formScreen({
       employee,
       title: flat['название_короткое'] || flatId,
-      subtitle: 'Паспорт · опись · улучшения',
+      subtitle: 'Паспорт · опись · задачи',
       breadcrumb: 'Сервис › Паспорт квартиры',
       content,
       onBack: () => opts.onExit(),

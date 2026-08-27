@@ -413,6 +413,7 @@ window.Journal = (() => {
   return {
     read,
     readMany,
+    colLetter,
     todayRecords,
     isToday,
     nextOpId,

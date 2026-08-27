@@ -919,6 +919,123 @@
       return {};
     });
 
+    // --- Паспорт квартиры, слои 2–3 (ADR-036, TICKET-П4) ----------------
+    // Инструкция: append с INS-id, идемпотентность по client_uuid.
+    Queue.registerSender('сервис_инструкция', async (formData, clientUuid) => {
+      const sheet = CONFIG.SERVICE_INSTRUCTIONS_SHEET;
+      const { headers, records } = await Journal.serviceRead(sheet);
+      const dup = records.find((r) => r.data['client_uuid'] === clientUuid);
+      let id;
+      if (dup) {
+        id = dup.data['id_инструкции'];
+      } else {
+        id = Forms.nextRefId(records.map((r) => r.data), 'INS', 'id_инструкции');
+        await Journal.serviceAppend(sheet,
+          { ...formData.row, 'id_инструкции': id, 'client_uuid': clientUuid },
+          headers);
+      }
+      await Journal.serviceLog({
+        'timestamp': formData.logTimestamp,
+        'кто': formData.actorId,
+        'действие': 'изменение_инструкции',
+        'id_записи': id,
+        'краткое_описание': formData.shortDesc,
+      });
+      return { id };
+    });
+
+    // Правка/скрытие инструкции — патч на месте (ADR-033) + лог.
+    Queue.registerSender('сервис_инструкция_правка', async (formData) => {
+      await Journal.serviceUpdate(CONFIG.SERVICE_INSTRUCTIONS_SHEET,
+        'id_инструкции', formData.itemId, formData.patch);
+      await Journal.serviceLog({
+        'timestamp': formData.logTimestamp,
+        'кто': formData.actorId,
+        'действие': 'изменение_инструкции',
+        'id_записи': formData.itemId,
+        'краткое_описание': formData.shortDesc,
+      });
+      return {};
+    });
+
+    // Дефект: append с DEF-id, идемпотентность по client_uuid.
+    Queue.registerSender('сервис_дефект', async (formData, clientUuid) => {
+      const sheet = CONFIG.SERVICE_DEFECTS_SHEET;
+      const { headers, records } = await Journal.serviceRead(sheet);
+      const dup = records.find((r) => r.data['client_uuid'] === clientUuid);
+      let id;
+      if (dup) {
+        id = dup.data['id_дефекта'];
+      } else {
+        id = Forms.nextRefId(records.map((r) => r.data), 'DEF', 'id_дефекта');
+        await Journal.serviceAppend(sheet,
+          { ...formData.row, 'id_дефекта': id, 'client_uuid': clientUuid },
+          headers);
+      }
+      await Journal.serviceLog({
+        'timestamp': formData.logTimestamp,
+        'кто': formData.actorId,
+        'действие': 'изменение_дефекта',
+        'id_записи': id,
+        'краткое_описание': formData.shortDesc,
+      });
+      return { id };
+    });
+
+    // Смена статуса/правка дефекта — патч на месте + лог.
+    Queue.registerSender('сервис_дефект_правка', async (formData) => {
+      await Journal.serviceUpdate(CONFIG.SERVICE_DEFECTS_SHEET,
+        'id_дефекта', formData.itemId, formData.patch);
+      await Journal.serviceLog({
+        'timestamp': formData.logTimestamp,
+        'кто': formData.actorId,
+        'действие': 'изменение_дефекта',
+        'id_записи': formData.itemId,
+        'краткое_описание': formData.shortDesc,
+      });
+      return {};
+    });
+
+    // Состояние ремонта: upsert по паре (id_объекта, зона). Ретрай
+    // идемпотентен: existing найдётся → update теми же значениями.
+    Queue.registerSender('сервис_ремонт', async (formData) => {
+      const sheet = CONFIG.SERVICE_RENOVATION_SHEET;
+      const { headers, records } = await Journal.serviceRead(sheet);
+      const existing = records.find((r) =>
+        r.data['id_объекта'] === formData.objId &&
+        r.data['зона'] === formData.zone);
+      if (existing) {
+        // serviceUpdate ищет по одной колонке — патчим адресно по
+        // rowNumber найденной строки через тот же механизм: ключом
+        // служит id_объекта, но строк на объект несколько (по зоне),
+        // поэтому пишем узкие диапазоны сами.
+        const cols = Object.keys(formData.patch)
+          .map((k) => headers.indexOf(k)).filter((i) => i >= 0);
+        const data = cols.map((c) => ({
+          range: sheet + '!' + Journal.colLetter(c) + existing.rowNumber +
+            ':' + Journal.colLetter(c) + existing.rowNumber,
+          values: [[formData.patch[headers[c]]]],
+        }));
+        if (data.length) {
+          await Sheets.batchUpdateValues(data, CONFIG.SERVICE_SPREADSHEET_ID);
+        }
+      } else {
+        await Journal.serviceAppend(sheet, {
+          'id_объекта': formData.objId,
+          'зона': formData.zone,
+          ...formData.patch,
+        }, headers);
+      }
+      await Journal.serviceLog({
+        'timestamp': formData.logTimestamp,
+        'кто': formData.actorId,
+        'действие': 'изменение_ремонта',
+        'id_записи': formData.objId + '/' + formData.zone,
+        'краткое_описание': formData.shortDesc,
+      });
+      return {};
+    });
+
     // Предложение новой категории (§14, TICKET-3.6). Пишет заявку в
     // _категории_на_модерации и аудит в _лог_действий. У листа модерации
     // нет client_uuid — дедуп по смыслу записи (idempotent на ретраях).
