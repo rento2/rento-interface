@@ -5983,30 +5983,48 @@ window.Forms = (() => {
     const canEdit = isManager || role === 'супервайзер';
 
     // ADR-036: паспорт — секции фактов. Поле: [ключ, подпись, опция];
-    // 'long' — textarea, 'secret' — значение скрыто до тапа (коды,
-    // пароли; в листе видны всем ролям — ADR-035 п.4, тут только UX).
+    // опция задаёт контрол формы (фаундер 27.08: «просто как форму,
+    // правила или селекторы везде где можно»):
+    //   'long' — textarea; 'num' — число; 'time' — время;
+    //   ['select', ...варианты] — закрытый список (чужое значение из
+    //   листа добавляется опцией, чтобы не потерять);
+    //   'secret' — текст; в просмотре (роли без правки) скрыт до тапа.
     const PASSPORT_SECTIONS = [
       ['дом', 'Дом и объект', [
-        ['комнат', 'Комнат'], ['площадь_м²', 'Площадь, м²'],
-        ['этаж', 'Этаж'], ['этажей_в_доме', 'Этажей в доме'],
-        ['лифт', 'Лифт'], ['вид_из_окна', 'Вид из окна'],
-        ['кадастровый_номер', 'Кадастровый номер'], ['парковка', 'Парковка'],
+        ['комнат', 'Комнат', 'num'], ['площадь_м²', 'Площадь, м²', 'num'],
+        ['этаж', 'Этаж', 'num'], ['этажей_в_доме', 'Этажей в доме', 'num'],
+        ['лифт', 'Лифт',
+          ['select', 'нет', 'пассажирский', 'пассажирский + грузовой']],
+        ['вид_из_окна', 'Вид из окна'],
+        ['кадастровый_номер', 'Кадастровый номер'],
+        ['парковка', 'Парковка',
+          ['select', 'нет', 'во дворе', 'на улице', 'подземная',
+            'платная рядом']],
       ]],
       ['правила', 'Вместимость и правила', [
-        ['макс_гостей', 'Макс. гостей'], ['мин_возраст', 'Мин. возраст заезда'],
-        ['заезд_с', 'Заезд с'], ['выезд_до', 'Выезд до'],
-        ['залог_₽', 'Залог ₽'], ['дети', 'Дети'],
-        ['питомцы', 'Питомцы'], ['курение', 'Курение'],
-        ['вечеринки', 'Вечеринки'],
-        ['отчётные_документы', 'Отчётные документы'],
-        ['помесячная_аренда', 'Помесячная аренда'],
+        ['макс_гостей', 'Макс. гостей', 'num'],
+        ['мин_возраст', 'Мин. возраст заезда', 'num'],
+        ['заезд_с', 'Заезд с', 'time'], ['выезд_до', 'Выезд до', 'time'],
+        ['залог_₽', 'Залог ₽', 'num'],
+        ['дети', 'Дети', ['select', 'можно', 'нельзя']],
+        ['питомцы', 'Питомцы',
+          ['select', 'можно', 'нельзя', 'по согласованию']],
+        ['курение', 'Курение',
+          ['select', 'нельзя', 'на балконе', 'можно']],
+        ['вечеринки', 'Вечеринки', ['select', 'нельзя', 'по согласованию']],
+        ['отчётные_документы', 'Отчётные документы', ['select', 'да', 'нет']],
+        ['помесячная_аренда', 'Помесячная аренда', ['select', 'да', 'нет']],
       ], 'Блок один в один уходит в «Правила» на сайте и Авито.'],
       ['доступ', 'Доступ и заселение', [
-        ['ключей_всего', 'Ключей всего'], ['ключи_где', 'Где ключи'],
+        ['ключей_всего', 'Ключей всего', 'num'],
+        ['ключи_где', 'Где ключи'],
         ['код_подъезда', 'Код подъезда', 'secret'],
         ['код_замка', 'Код замка/сейфа', 'secret'],
-        ['тип_замка', 'Тип замка'],
-        ['бесконтактное_заселение', 'Бесконтактное заселение'],
+        ['тип_замка', 'Тип замка',
+          ['select', 'кодовый', 'электронный', 'обычный ключ',
+            'сейф с ключом']],
+        ['бесконтактное_заселение', 'Бесконтактное заселение',
+          ['select', 'да', 'нет']],
         ['прочие_доступы', 'Прочие доступы'],
       ]],
       ['интернет', 'Интернет', [
@@ -6036,6 +6054,13 @@ window.Forms = (() => {
         ['ссылка_авито', 'Ссылка на Авито'],
       ]],
     ];
+    // Подсказки-примеры в пустых текстовых полях.
+    const FIELD_PLACEHOLDER = {
+      'счётчики_период': 'например: 15–19 числа',
+      'вид_из_окна': 'во двор / на улицу / панорамный…',
+      'ключи_где': '2 в офисе, 1 у супервайзера…',
+      'ук_аварийная': 'название и телефон',
+    };
     // Гостевой минимум: «не хватает» в шапке показывает эти дыры
     // первыми — ровно то, о чём гости спрашивают менеджера.
     const GUEST_CORE = ['заезд_с', 'выезд_до', 'код_подъезда', 'код_замка',
@@ -6194,7 +6219,8 @@ window.Forms = (() => {
     }
 
     // ------------------- паспорт: секции-аккордеоны ---------------------
-    const secOpen = {};  // открытость аккордеонов между перерисовками
+    // Опись раскрыта сразу (фаундер 27.08) — остальное по клику.
+    const secOpen = { 'опись': true };
 
     function mkBtn(label, fn, cls) {
       const btn = h('button',
@@ -6226,36 +6252,28 @@ window.Forms = (() => {
       return btn;
     }
 
-    function sectionEditor(title, fields) {
-      const wrap = h('div');
-      const editBtn = h('button', { class: 'kb-move-btn', type: 'button' },
-        '✎ Изменить');
-      const area = h('div', { class: 'kb-details', style: 'display:none' });
-      const inputs = {};
-      fields.forEach(([k, label, opt]) => {
-        const inp = opt === 'long' ? textarea(label) : textInput(label);
-        inp.value = passport[k] || '';
-        inputs[k] = inp;
-        area.append(field(label, inp));
-      });
-      const saveBtn = h('button', { class: 'kb-move-btn kb-save', type: 'button' },
-        'Сохранить');
-      saveBtn.addEventListener('click', () => {
-        const patch = { 'обновлено_кем': myId, 'обновлено_когда': logStamp() };
-        fields.forEach(([k]) => { patch[k] = inputs[k].value.trim(); });
-        Object.assign(passport, patch);
-        Queue.add('сервис_паспорт', {
-          objId: flatId, patch, actorId: myId, logTimestamp: logStamp(),
-          shortDesc: 'Паспорт ' + flatId + ': раздел «' + title + '»',
-        });
-        renderHead(); renderPassport();
-      });
-      area.append(saveBtn);
-      editBtn.addEventListener('click', () => {
-        area.style.display = area.style.display === 'none' ? '' : 'none';
-      });
-      wrap.append(editBtn, area);
-      return wrap;
+    // Контрол по типу поля («форма сразу», фаундер 27.08).
+    function passportControl(k, label, opt) {
+      const value = String(passport[k] || '').trim();
+      let inp;
+      if (opt === 'long') {
+        inp = textarea(FIELD_PLACEHOLDER[k] || '');
+      } else if (opt === 'num') {
+        inp = numberInput();
+      } else if (opt === 'time') {
+        inp = h('input', { class: 'field-input', type: 'time' });
+      } else if (Array.isArray(opt)) {
+        inp = selectInput();
+        fillSelect(inp, opt.slice(1).map((o) => ({ value: o, text: o })), '—');
+        // Значение из листа вне списка не теряем — добавляем опцией.
+        if (value && opt.slice(1).indexOf(value) === -1) {
+          inp.append(h('option', { value: value }, value));
+        }
+      } else {
+        inp = textInput(FIELD_PLACEHOLDER[k] || '');
+      }
+      inp.value = value;
+      return inp;
     }
 
     function renderPassport() {
@@ -6266,20 +6284,43 @@ window.Forms = (() => {
         const det = sectionDetails('f_' + key, title,
           filled + '/' + fields.length);
         const body = h('div', { class: 'fp-sec-body' });
-        const grid = h('div', { class: 'fp-facts' });
-        fields.forEach(([k, label, opt]) => {
-          const v = String(passport[k] || '').trim();
-          grid.append(h('div',
-            { class: 'fp-fact' + (opt === 'long' ? ' fp-fact-wide' : '') },
-            h('span', { class: 'fp-fact-label' }, label),
-            (opt === 'secret' && v) ? secretSpan(k, v)
-              : h('span', { class: 'fp-fact-val' + (v ? '' : ' fp-empty') },
-                v || 'не заполнено')));
-        });
-        body.append(grid);
+        if (!canEdit) {
+          // Роли без правки — просмотр фактов, секреты по тапу.
+          const grid = h('div', { class: 'fp-facts' });
+          fields.forEach(([k, label, opt]) => {
+            const v = String(passport[k] || '').trim();
+            grid.append(h('div',
+              { class: 'fp-fact' + (opt === 'long' ? ' fp-fact-wide' : '') },
+              h('span', { class: 'fp-fact-label' }, label),
+              (opt === 'secret' && v) ? secretSpan(k, v)
+                : h('span', { class: 'fp-fact-val' + (v ? '' : ' fp-empty') },
+                  v || 'не заполнено')));
+          });
+          body.append(grid);
+        } else {
+          // Секция и есть форма: поля с текущими значениями, селекторы
+          // где возможно, одна кнопка «Сохранить» на секцию.
+          const grid = h('div', { class: 'fp-form' });
+          const inputs = {};
+          fields.forEach(([k, label, opt]) => {
+            const inp = passportControl(k, label, opt);
+            inputs[k] = inp;
+            grid.append(field(label, inp));
+          });
+          grid.append(mkBtn('Сохранить', () => {
+            const patch = { 'обновлено_кем': myId, 'обновлено_когда': logStamp() };
+            fields.forEach(([k]) => { patch[k] = inputs[k].value.trim(); });
+            Object.assign(passport, patch);
+            Queue.add('сервис_паспорт', {
+              objId: flatId, patch, actorId: myId, logTimestamp: logStamp(),
+              shortDesc: 'Паспорт ' + flatId + ': раздел «' + title + '»',
+            });
+            renderHead(); renderPassport();
+          }, 'kb-save'));
+          body.append(grid);
+        }
         if (hint) body.append(h('p', { class: 'field-hint' }, hint));
         if (key === 'уборка') appendCleaningItems(body);
-        if (canEdit) body.append(sectionEditor(title, fields));
         det.append(body);
         passportBox.append(det);
       });
@@ -7208,6 +7249,11 @@ window.Forms = (() => {
         ITEM_TYPES.forEach((t) => typeSelect.append(
           h('option', { value: t }, t)));
         typeSelect.value = data['тип_позиции'] || '';
+        const ownSelect = selectInput();
+        fillSelect(ownSelect, [
+          { value: 'собственник', text: 'собственник' },
+          { value: 'Ренто', text: 'Ренто' }]);
+        ownSelect.value = data['принадлежность'] || '';
         const noteInput = textInput('Примечание');
         noteInput.value = data['примечание'] || '';
         const saveBtn = h('button', { class: 'kb-move-btn kb-save', type: 'button' },
@@ -7216,6 +7262,7 @@ window.Forms = (() => {
           'количество': num(qtyInput.value) || 1,
           'состояние': stateSelect.value,
           'тип_позиции': typeSelect.value,
+          'принадлежность': ownSelect.value,
           'примечание': noteInput.value.trim(),
         }, 'Опись ' + flatId + ': ' + (data['название'] || data['id_позиции']) +
           ' — правка'));
@@ -7231,6 +7278,7 @@ window.Forms = (() => {
         });
         details.append(field('Количество', qtyInput), field('Состояние', stateSelect),
           field('Тип позиции (флаг на сайт)', typeSelect),
+          field('Принадлежность', ownSelect),
           field('Примечание', noteInput),
           h('div', { class: 'kb-moves' }, saveBtn, dropBtn));
         line.addEventListener('click', () => {
@@ -7253,92 +7301,63 @@ window.Forms = (() => {
         .filter((z) => z && !ZONES.includes(z)))];
     }
 
-    function addInvForm() {
-      const catSelect = selectInput();
-      fillSelect(catSelect, CATS.map((c) => ({ value: c, text: c })), 'Группа…');
-      const zoneSelect = selectInput();
-      const rebuildZones = () => {
-        UI.clear(zoneSelect);
-        zoneSelect.append(h('option', { value: '' }, 'Зона…'));
-        ZONES.concat(customZones()).forEach((z) =>
-          zoneSelect.append(h('option', { value: z }, z)));
-        zoneSelect.append(h('option', { value: '__new' }, '+ Своя зона…'));
-      };
-      rebuildZones();
-      const newZoneInput = textInput('Название новой зоны («Балкон»)');
-      newZoneInput.style.display = 'none';
-      const typeSelect = selectInput();
-      typeSelect.append(h('option', { value: '' }, 'Тип для сайта (не обязательно)…'));
-      ITEM_TYPES.forEach((t) => typeSelect.append(h('option', { value: t }, t)));
-      const nameInput = textInput('Название («Холодильник Bosch», «Комплект белья»)');
-      const qtyInput = numberInput();
-      qtyInput.placeholder = 'Кол-во';
-      const stateSelect = selectInput();
-      fillSelect(stateSelect, STATES.map((s) => ({ value: s, text: s })), 'Состояние…');
-      const ownSelect = selectInput();
-      fillSelect(ownSelect, [
-        { value: 'собственник', text: 'собственник' },
-        { value: 'Ренто', text: 'Ренто' }], 'Чьё…');
-      const noteInput = textInput('Примечание (серийник, дефекты)');
-      const err = h('div', { class: 'field-error', style: 'display:none' });
-      const zoneField = field('Зона', zoneSelect);
-      const newZoneField = field('Название новой зоны', newZoneInput);
-      newZoneInput.style.display = '';
-      const zoned = () => ZONED_CATS.includes(catSelect.value);
-      const syncZone = () => {
-        zoneField.style.display = zoned() ? '' : 'none';
-        newZoneField.style.display =
-          (zoned() && zoneSelect.value === '__new') ? '' : 'none';
-      };
-      catSelect.addEventListener('change', syncZone);
-      zoneSelect.addEventListener('change', syncZone);
-      syncZone();
-      const addBtn = h('button', { class: 'kb-move-btn kb-save', type: 'button' },
-        '+ Позиция');
-      addBtn.addEventListener('click', () => {
-        let zone = zoneSelect.value === '__new'
-          ? newZoneInput.value.trim() : zoneSelect.value;
-        if (!zoned()) zone = '';
-        if (!catSelect.value || !nameInput.value.trim() ||
-            !stateSelect.value || !ownSelect.value ||
-            (zoned() && !zone)) {
-          err.textContent = zoned()
-            ? 'Заполните группу, зону, название, состояние и принадлежность.'
-            : 'Заполните группу, название, состояние и принадлежность.';
-          err.style.display = '';
-          return;
-        }
-        err.style.display = 'none';
+    // Опись v3 (фаундер 27.08): раскрыта сразу, заполняется инлайн —
+    // как чек-лист на канбане. «+ Комната» добавляет комнату во все
+    // зонные группы; под каждой комнатой (и в конце плоских групп) —
+    // строка быстрого добавления: название + количество + Enter.
+    // Состояние по умолчанию «хорошее», принадлежность — умный дефолт
+    // (посуда/бельё/расходники — Ренто); детали — тапом по строке.
+    const extraZones = [];   // комнаты, добавленные в этой сессии
+    let lastAddKey = null;   // чтобы фокус вернулся в ту же строку ввода
+    const RENTO_DEFAULT_CATS = ['посуда', 'бельё и полотенца', 'расходники'];
+
+    function inlineAddRow(cat, zone) {
+      const key = cat + '|' + (zone || '');
+      const nameInp = h('input', {
+        class: 'field-input fp-ia-name', type: 'text',
+        placeholder: '+ позиция…',
+      });
+      const qtyInp = h('input', {
+        class: 'field-input fp-ia-qty', type: 'number', min: '1',
+        placeholder: '1',
+      });
+      const btn = h('button', { class: 'fp-ia-btn', type: 'button' }, '+');
+      const submit = () => {
+        const name = nameInp.value.trim();
+        if (!name) { nameInp.focus(); return; }
         const row = {
           'id_объекта': flatId,
-          'зона': zoned() ? zone : '',
-          'категория': catSelect.value,
-          'тип_позиции': typeSelect.value,
-          'название': nameInput.value.trim(),
-          'количество': num(qtyInput.value) || 1,
-          'состояние': stateSelect.value,
-          'принадлежность': ownSelect.value,
-          'примечание': noteInput.value.trim(),
+          'зона': zone || '',
+          'категория': cat,
+          'тип_позиции': '',
+          'название': name,
+          'количество': num(qtyInp.value) || 1,
+          'состояние': 'хорошее',
+          'принадлежность':
+            RENTO_DEFAULT_CATS.includes(cat) ? 'Ренто' : 'собственник',
+          'примечание': '',
           'добавил': myId,
           'дата_добавления': logStamp(),
           'статус': 'актуальна',
         };
         Queue.add('сервис_опись_добавление', {
           row, actorId: myId, logTimestamp: logStamp(),
-          shortDesc: 'Опись ' + flatId + ': + ' + row['название'],
+          shortDesc: 'Опись ' + flatId + ': + ' + name,
         });
         inventory.push({ ...row, 'id_позиции': '', _pending: true });
-        nameInput.value = ''; qtyInput.value = ''; noteInput.value = '';
-        newZoneInput.value = ''; typeSelect.value = '';
-        rebuildZones(); syncZone();
+        lastAddKey = key;
         renderHead(); renderInventory();
+      };
+      btn.addEventListener('click', submit);
+      nameInp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); submit(); }
       });
-      return h('div', { class: 'kb-add fp-form' },
-        field('Группа', catSelect), zoneField, newZoneField,
-        field('Название', nameInput), field('Количество', qtyInput),
-        field('Состояние', stateSelect), field('Принадлежность', ownSelect),
-        field('Тип для сайта (не обязательно)', typeSelect),
-        field('Примечание', noteInput), err, addBtn);
+      const rowEl = h('div', { class: 'fp-inline-add' }, nameInp, qtyInp, btn);
+      if (lastAddKey === key) {
+        lastAddKey = null;
+        setTimeout(() => nameInp.focus(), 0);
+      }
+      return rowEl;
     }
 
     let showGone = false;
@@ -7353,7 +7372,6 @@ window.Forms = (() => {
       const det = sectionDetails('опись', 'Опись имущества',
         actual.length ? actual.length + ' · ' + qtySum(actual) + ' шт' : '—');
       const body = h('div', { class: 'fp-sec-body' });
-      if (canEdit) body.append(addInvForm());
       const bad = actual.filter(
         (i) => i['состояние'] === 'требует замены').length;
       if (actual.length) {
@@ -7371,25 +7389,29 @@ window.Forms = (() => {
           h('span', { class: 'eyebrow' }, 'НА САЙТ — ИЗ ОПИСИ'),
           h('p', {}, types.join(' · '))));
       }
-      if (!actual.length) {
-        body.append(h('p', { class: 'muted' },
-          'Опись пуста. Мебель, техника, быт и уют раскладываются по ' +
-          'зонам; посуда и бельё — общими группами.'));
-      }
+      // Комнаты: базовые + встречающиеся в данных + добавленные сейчас.
+      const rooms = ZONES.concat(customZones())
+        .concat(extraZones.filter((z) =>
+          !ZONES.includes(z) && !customZones().includes(z)));
       CATS.forEach((cat) => {
         const items = actual.filter((i) => catOf(i) === cat);
-        if (!items.length) return;
+        // Пустые группы видят только те, кто может заполнять.
+        if (!items.length && !canEdit) return;
         body.append(h('p', { class: 'flat-zone' },
-          cat.toUpperCase() + ' · ' + items.length + ' ' +
-          pluralPos(items.length) + ' · ' + qtySum(items) + ' шт'));
+          cat.toUpperCase() + (items.length
+            ? ' · ' + items.length + ' ' + pluralPos(items.length) +
+              ' · ' + qtySum(items) + ' шт'
+            : '')));
         if (ZONED_CATS.includes(cat)) {
-          const zones = ZONES.concat(customZones());
-          zones.forEach((z) => {
+          rooms.forEach((z) => {
             const inZone = items.filter(
               (i) => String(i['зона'] || '').trim() === z);
-            if (!inZone.length) return;
+            // Комната видна, если в ней что-то есть — или её только
+            // что завели «+ Комната» (тогда с пустой строкой ввода).
+            if (!inZone.length && !extraZones.includes(z)) return;
             body.append(h('p', { class: 'fp-inv-zone' }, z));
             inZone.forEach((i) => body.append(invRow(i)));
+            if (canEdit) body.append(inlineAddRow(cat, z));
           });
           const noZone = items.filter(
             (i) => !String(i['зона'] || '').trim());
@@ -7399,8 +7421,23 @@ window.Forms = (() => {
           }
         } else {
           items.forEach((i) => body.append(invRow(i)));
+          if (canEdit) body.append(inlineAddRow(cat, ''));
         }
       });
+      if (canEdit) {
+        body.append(mkBtn('+ Комната', () => {
+          const name = (prompt('Название комнаты (например: Гостиная, ' +
+            'Балкон):') || '').trim();
+          if (!name) return;
+          if (!extraZones.includes(name)) extraZones.push(name);
+          renderInventory();
+        }));
+        body.append(h('p', { class: 'field-hint' },
+          'Позиция добавляется прямо в строке комнаты: название, ' +
+          'количество, Enter. Состояние и принадлежность ставятся по ' +
+          'умолчанию — поправить можно тапом по строке. «+ Комната» ' +
+          'заводит комнату сразу в мебели, технике и быте.'));
+      }
       if (gone.length) {
         const link = h('button', { class: 'link-btn', type: 'button' },
           (showGone ? 'скрыть выбывшие' : 'выбывшие: ' + gone.length));
