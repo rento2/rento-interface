@@ -6066,12 +6066,60 @@ window.Forms = (() => {
     const GUEST_CORE = ['заезд_с', 'выезд_до', 'код_подъезда', 'код_замка',
       'wifi_сеть', 'wifi_пароль', 'мусор_куда', 'макс_гостей', 'залог_₽'];
 
-    // Опись v2 (ADR-036 п.2): категории уточнены фаундером, зоны
-    // расширяемые. Легаси-значения старых строк маппятся при показе.
+    // Опись (ADR-036 п.2, уточнения фаундера 27.08): категории с его
+    // слов, «предметы быта» — общим списком без комнат; по комнатам
+    // раскладываются мебель и техника. Легаси-значения маппятся.
     const CATS = ['мебель', 'техника', 'посуда', 'бельё и полотенца',
-      'быт и уют', 'расходники'];
-    const CAT_LEGACY = { 'текстиль': 'бельё и полотенца', 'прочее': 'быт и уют' };
-    const ZONED_CATS = ['мебель', 'техника', 'быт и уют'];
+      'предметы быта', 'расходники'];
+    const CAT_LEGACY = {
+      'текстиль': 'бельё и полотенца',
+      'быт и уют': 'предметы быта',
+      'прочее': 'предметы быта',
+    };
+    const ZONED_CATS = ['мебель', 'техника'];
+
+    // Стандартный шаблон описи (фаундер 27.08): показывается при
+    // открытии, супервайзер просто проставляет количества. Пустое
+    // количество = в квартире нет, строка в лист не пишется.
+    // Элемент: строка — обычная позиция; { n, sizes: [...] } — выбор
+    // размера (кровать); { n, size: 'диагональ' } — вписать размер (ТВ).
+    // Один шаблон на все квартиры; правится здесь (канон закрытых
+    // списков — расширение правкой констант).
+    const INV_TEMPLATE = {
+      'мебель': {
+        'прихожая': ['Пуф', 'Шкаф для одежды', 'Зеркало', 'Обувница'],
+        'кухня': ['Кухонный гарнитур', 'Стол', 'Стулья'],
+        'спальня': [
+          { n: 'Кровать', sizes: ['140/200', '160/200', '180/200', 'двухъярусная'] },
+          'Прикроватная тумба', 'Шкаф', 'Комод'],
+        'гостиная': ['Диван', 'Шкаф', 'Стол письменный', 'Кресло рабочее',
+          'Полка навесная'],
+        'санузел': ['Полка под раковиной', 'Навесная тумба'],
+      },
+      'техника': {
+        'кухня': ['Холодильник', 'Варочная панель', 'Газовая плита',
+          'Индукционная плита', 'СВЧ-печь', 'Чайник'],
+        'спальня': [{ n: 'Телевизор', size: 'диагональ' }, 'Кронштейн',
+          'Торшер', 'Кондиционер'],
+        'гостиная': [{ n: 'Телевизор', size: 'диагональ' }, 'Торшер',
+          'Кондиционер', 'Утюг'],
+        'санузел': ['Фен', 'Стиральная машина', 'Сушильная машина',
+          'Полотенцесушитель'],
+      },
+      'посуда': ['Кастрюля', 'Сковорода', 'Тарелки суповые',
+        'Тарелки столовые', 'Кружки', 'Стаканы', 'Бокалы',
+        'Лоток для хранения приборов', 'Вилки', 'Ложки', 'Ножи столовые',
+        'Нож кухонный', 'Доска разделочная', 'Штопор', 'Половник',
+        'Тёрка', 'Ножницы', 'Ложка чайная', 'Ухват', 'Дозатор для мыла',
+        'Полотенце кухонное', 'Ведро для мусора'],
+      'бельё и полотенца': ['Наволочки', 'Простынь', 'Пододеяльник',
+        'Наматрасник', 'Одеяла', 'Подушки 50×70', 'Подушки 50×50',
+        'Полотенце банное', 'Полотенце для лица'],
+      'предметы быта': ['Сушилка', 'Гладильная доска',
+        'Дозатор для жидкого мыла', 'Мыльница', 'Стакан для щёток',
+        'Ёршик', 'Лопатка для обуви', 'Швабра', 'Моп для швабры'],
+      'расходники': [],
+    };
     const ZONES = ['прихожая', 'кухня', 'спальня', 'гостиная', 'санузел', 'ванная'];
     const STATES = ['новое', 'хорошее', 'удовлетворительное', 'требует замены'];
     // тип_позиции — машиночитаемый тип: флаги «Техника» и спальные
@@ -7309,7 +7357,16 @@ window.Forms = (() => {
     // (посуда/бельё/расходники — Ренто); детали — тапом по строке.
     const extraZones = [];   // комнаты, добавленные в этой сессии
     let lastAddKey = null;   // чтобы фокус вернулся в ту же строку ввода
-    const RENTO_DEFAULT_CATS = ['посуда', 'бельё и полотенца', 'расходники'];
+    let tplFocusKey = null;  // фокус на следующую шаблонную позицию
+    const RENTO_DEFAULT_CATS = ['посуда', 'бельё и полотенца',
+      'предметы быта', 'расходники'];
+    function invDefaults(cat) {
+      return {
+        'состояние': 'хорошее',
+        'принадлежность':
+          RENTO_DEFAULT_CATS.includes(cat) ? 'Ренто' : 'собственник',
+      };
+    }
 
     function inlineAddRow(cat, zone) {
       const key = cat + '|' + (zone || '');
@@ -7332,9 +7389,7 @@ window.Forms = (() => {
           'тип_позиции': '',
           'название': name,
           'количество': num(qtyInp.value) || 1,
-          'состояние': 'хорошее',
-          'принадлежность':
-            RENTO_DEFAULT_CATS.includes(cat) ? 'Ренто' : 'собственник',
+          ...invDefaults(cat),
           'примечание': '',
           'добавил': myId,
           'дата_добавления': logStamp(),
@@ -7358,6 +7413,104 @@ window.Forms = (() => {
         setTimeout(() => nameInp.focus(), 0);
       }
       return rowEl;
+    }
+
+    // Строка шаблона: серое название + количество. Проставил число —
+    // позиция записалась в лист и стала обычной строкой; пустое = «в
+    // квартире нет», в лист не пишется. Кровать/ТВ спрашивают размер.
+    function templateRow(cat, zone, item, nextKey) {
+      const isObj = typeof item === 'object';
+      const name = isObj ? item.n : item;
+      const key = cat + '|' + (zone || '') + '|' + name;
+      let sizeCtl = null;
+      if (isObj && item.sizes) {
+        sizeCtl = selectInput();
+        sizeCtl.className = 'field-input fp-tpl-size';
+        fillSelect(sizeCtl, item.sizes.map(
+          (s) => ({ value: s, text: s })), 'размер…');
+        sizeCtl.append(h('option', { value: '__custom' }, 'свой…'));
+      } else if (isObj && item.size) {
+        sizeCtl = h('input', {
+          class: 'field-input fp-tpl-size', type: 'text',
+          placeholder: item.size,
+        });
+      }
+      const qtyInp = h('input', {
+        class: 'field-input fp-ia-qty', type: 'number', min: '1',
+        placeholder: '—',
+      });
+      const btn = h('button', { class: 'fp-ia-btn', type: 'button' }, '+');
+      const submit = () => {
+        const qty = num(qtyInp.value);
+        if (!qty) { qtyInp.focus(); return; }
+        let full = name;
+        if (sizeCtl) {
+          let sz = sizeCtl.value === '__custom'
+            ? (prompt('Размер:') || '').trim()
+            : String(sizeCtl.value || '').trim();
+          if (!sz && isObj && item.sizes) { sizeCtl.focus(); return; }
+          if (sz) full = name + ' ' + sz;
+        }
+        const row = {
+          'id_объекта': flatId,
+          'зона': zone || '',
+          'категория': cat,
+          'тип_позиции': '',
+          'название': full,
+          'количество': qty,
+          ...invDefaults(cat),
+          'примечание': '',
+          'добавил': myId,
+          'дата_добавления': logStamp(),
+          'статус': 'актуальна',
+        };
+        Queue.add('сервис_опись_добавление', {
+          row, actorId: myId, logTimestamp: logStamp(),
+          shortDesc: 'Опись ' + flatId + ': + ' + full,
+        });
+        inventory.push({ ...row, 'id_позиции': '', _pending: true });
+        tplFocusKey = nextKey;
+        renderHead(); renderInventory();
+      };
+      btn.addEventListener('click', submit);
+      qtyInp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); submit(); }
+      });
+      const rowEl = h('div', { class: 'fp-tpl-row' },
+        h('span', { class: 'fp-tpl-name' }, name),
+        sizeCtl || '', qtyInp, btn);
+      if (tplFocusKey === key) {
+        tplFocusKey = null;
+        setTimeout(() => qtyInp.focus(), 0);
+      }
+      return rowEl;
+    }
+
+    // Непроставленные позиции шаблона: скрываем те, по которым уже
+    // есть строка листа с тем же началом названия (Кровать → «Кровать
+    // 160/200») в этой группе и комнате.
+    function unfilledTemplate(cat, zone, items) {
+      const list = ZONED_CATS.includes(cat)
+        ? ((INV_TEMPLATE[cat] || {})[zone] || [])
+        : (INV_TEMPLATE[cat] || []);
+      const names = items.map((i) =>
+        String(i['название'] || '').trim().toLowerCase());
+      return list.filter((item) => {
+        const n = (typeof item === 'object' ? item.n : item)
+          .trim().toLowerCase();
+        return !names.some((x) => x.indexOf(n) === 0);
+      });
+    }
+
+    function appendTemplateRows(body, cat, zone, tmpl) {
+      tmpl.forEach((item, idx) => {
+        const next = tmpl[idx + 1];
+        const nextName = next
+          ? cat + '|' + (zone || '') + '|' +
+            (typeof next === 'object' ? next.n : next)
+          : null;
+        body.append(templateRow(cat, zone, item, nextName));
+      });
     }
 
     let showGone = false;
@@ -7395,8 +7548,10 @@ window.Forms = (() => {
           !ZONES.includes(z) && !customZones().includes(z)));
       CATS.forEach((cat) => {
         const items = actual.filter((i) => catOf(i) === cat);
-        // Пустые группы видят только те, кто может заполнять.
+        // Пустые группы (и шаблон) видят только те, кто заполняет.
         if (!items.length && !canEdit) return;
+        if (!items.length && !Object.keys(INV_TEMPLATE[cat] || {}).length &&
+            cat === 'расходники') return;
         body.append(h('p', { class: 'flat-zone' },
           cat.toUpperCase() + (items.length
             ? ' · ' + items.length + ' ' + pluralPos(items.length) +
@@ -7406,12 +7561,16 @@ window.Forms = (() => {
           rooms.forEach((z) => {
             const inZone = items.filter(
               (i) => String(i['зона'] || '').trim() === z);
-            // Комната видна, если в ней что-то есть — или её только
-            // что завели «+ Комната» (тогда с пустой строкой ввода).
-            if (!inZone.length && !extraZones.includes(z)) return;
+            const tmpl = canEdit ? unfilledTemplate(cat, z, inZone) : [];
+            // Комната видна, если в ней что-то есть, есть шаблонные
+            // позиции для заполнения — или её завели «+ Комната».
+            if (!inZone.length && !tmpl.length && !extraZones.includes(z)) return;
             body.append(h('p', { class: 'fp-inv-zone' }, z));
             inZone.forEach((i) => body.append(invRow(i)));
-            if (canEdit) body.append(inlineAddRow(cat, z));
+            if (canEdit) {
+              appendTemplateRows(body, cat, z, tmpl);
+              body.append(inlineAddRow(cat, z));
+            }
           });
           const noZone = items.filter(
             (i) => !String(i['зона'] || '').trim());
@@ -7421,22 +7580,27 @@ window.Forms = (() => {
           }
         } else {
           items.forEach((i) => body.append(invRow(i)));
-          if (canEdit) body.append(inlineAddRow(cat, ''));
+          if (canEdit) {
+            appendTemplateRows(body, cat, '',
+              unfilledTemplate(cat, '', items));
+            body.append(inlineAddRow(cat, ''));
+          }
         }
       });
       if (canEdit) {
         body.append(mkBtn('+ Комната', () => {
-          const name = (prompt('Название комнаты (например: Гостиная, ' +
-            'Балкон):') || '').trim();
+          const name = (prompt('Название комнаты (например: Балкон, ' +
+            'Вторая спальня):') || '').trim();
           if (!name) return;
           if (!extraZones.includes(name)) extraZones.push(name);
           renderInventory();
         }));
         body.append(h('p', { class: 'field-hint' },
-          'Позиция добавляется прямо в строке комнаты: название, ' +
-          'количество, Enter. Состояние и принадлежность ставятся по ' +
-          'умолчанию — поправить можно тапом по строке. «+ Комната» ' +
-          'заводит комнату сразу в мебели, технике и быте.'));
+          'Серые позиции — стандартный список: есть в квартире — ' +
+          'поставьте количество (Enter или «+»), нет — оставьте пустым, ' +
+          'в опись оно не запишется. Чего нет в списке — впишите в ' +
+          'строке «+ позиция». Состояние и принадлежность ставятся по ' +
+          'умолчанию, поправить — тапом по строке.'));
       }
       if (gone.length) {
         const link = h('button', { class: 'link-btn', type: 'button' },

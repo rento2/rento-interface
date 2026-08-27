@@ -1515,6 +1515,15 @@ body {
 }
 .fp-ia-btn:hover { border-color: var(--lime-700); color: var(--ink); }
 
+/* Шаблонные позиции описи: серое название + количество; проставил —
+   стала обычной строкой, пустое = «в квартире нет». */
+.fp-tpl-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 0 3px 10px;
+}
+.fp-tpl-name { flex: 1; font-size: 13.5px; color: var(--text-2); }
+.fp-tpl-size { width: 118px; padding: 7px 8px; font-size: 13px; flex-shrink: 0; }
+
 /* Формы карточки — сетка с подписями и тёмной главной кнопкой,
    как в черновике-макете (согласован фаундером 27.08). */
 .fp-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
