@@ -5299,6 +5299,31 @@ window.Forms = (() => {
     // карточке открывает модалку задачи со всем остальным: полное
     // описание, чек-лист, материалы, правки, полный набор переходов.
 
+    // Обратный ход ADR-036 п.3 (REVIEW-P, В-2): отменённая задача
+    // возвращает свои дефекты «в работе» в «принят», связь снимается.
+    // Дефекты на доску не грузятся — читаем лист в момент отмены.
+    async function releaseDefects(taskId) {
+      try {
+        const { records } =
+          await Journal.serviceRead(CONFIG.SERVICE_DEFECTS_SHEET);
+        const now = new Date().toISOString();
+        records.map((r) => r.data)
+          .filter((def) => String(def['id_задачи'] || '').trim() === taskId &&
+            String(def['статус'] || 'принят').trim() === 'в_работе')
+          .forEach((def) => Queue.add('сервис_дефект_правка', {
+            itemId: def['id_дефекта'],
+            patch: { 'статус': 'принят', 'id_задачи': '',
+              'обновлено_кем': myId, 'обновлено_когда': now },
+            actorId: myId, logTimestamp: now,
+            shortDesc: 'Дефект ' + def['id_дефекта'] + ' → принят: задача ' +
+              taskId + ' отменена',
+          }));
+      } catch (err) {
+        // Чтение листа упало — дефект вернёт вручную кнопка «↩ принят».
+        console.error('Возврат дефектов отменённой задачи:', err);
+      }
+    }
+
     // Кнопки переходов по правам §5. compact=true — только главный
     // переход (превью); в модалке — всё, включая возврат и отмену.
     // Перед сменой статуса из модалки — closeFn().
@@ -5346,6 +5371,7 @@ window.Forms = (() => {
           if (closeFn) closeFn();
           pushUpdate(data, { 'статус': CANCELLED }, 'смена_статуса',
             'Задача ' + data['id_задачи'] + ' отменена');
+          releaseDefects(data['id_задачи']);
         }));
       }
       return moves;
@@ -6089,20 +6115,25 @@ window.Forms = (() => {
     // размера (кровать); { n, size: 'диагональ' } — вписать размер (ТВ).
     // Один шаблон на все квартиры; правится здесь (канон закрытых
     // списков — расширение правкой констант).
+    // Словарь выровнен с номенклатурой заноса актов (add_obj_*.py —
+    // образец, REVIEW-P минор 1): «Тумба прикроватная», «Микроволновка»,
+    // «Тарелки плоские/глубокие», «Вилка/Ложка столовая» и т.д. —
+    // иначе занесённые позиции не гасят серые строки и плодят двойники.
     const INV_TEMPLATE = {
       'мебель': {
         'прихожая': ['Пуф', 'Шкаф для одежды', 'Зеркало', 'Обувница'],
         'кухня': ['Кухонный гарнитур', 'Стол', 'Стулья'],
         'спальня': [
           { n: 'Кровать', sizes: ['140/200', '160/200', '180/200', 'двухъярусная'] },
-          'Прикроватная тумба', 'Шкаф', 'Комод'],
+          'Тумба прикроватная', 'Шкаф', 'Комод'],
         'гостиная': ['Диван', 'Шкаф', 'Стол письменный', 'Кресло рабочее',
           'Полка навесная'],
-        'санузел': ['Полка под раковиной', 'Навесная тумба'],
+        'санузел': ['Тумба под раковиной', 'Полка под раковиной'],
       },
       'техника': {
         'кухня': ['Холодильник', 'Варочная панель', 'Газовая плита',
-          'Индукционная плита', 'СВЧ-печь', 'Чайник'],
+          'Индукционная плита', 'Духовка', 'Посудомоечная машина',
+          'Микроволновка', 'Чайник'],
         'спальня': [{ n: 'Телевизор', size: 'диагональ' }, 'Кронштейн',
           'Торшер', 'Кондиционер'],
         'гостиная': [{ n: 'Телевизор', size: 'диагональ' }, 'Торшер',
@@ -6110,18 +6141,19 @@ window.Forms = (() => {
         'санузел': ['Фен', 'Стиральная машина', 'Сушильная машина',
           'Полотенцесушитель'],
       },
-      'посуда': ['Кастрюля', 'Сковорода', 'Тарелки суповые',
-        'Тарелки столовые', 'Кружки', 'Стаканы', 'Бокалы',
-        'Лоток для хранения приборов', 'Вилки', 'Ложки', 'Ножи столовые',
-        'Нож кухонный', 'Доска разделочная', 'Штопор', 'Половник',
-        'Тёрка', 'Ножницы', 'Ложка чайная', 'Ухват', 'Дозатор для мыла',
-        'Полотенце кухонное', 'Ведро для мусора'],
+      'посуда': ['Кастрюля', 'Сковородка', 'Тарелки плоские',
+        'Тарелки глубокие', 'Салатник', 'Кружки', 'Стаканы', 'Бокалы',
+        'Лоток для столовых приборов', 'Вилка столовая', 'Ложка столовая',
+        'Ложка чайная', 'Нож столовый', 'Нож кухонный',
+        'Доска разделочная', 'Дуршлаг', 'Штопор', 'Половник',
+        'Тёрка', 'Ножницы', 'Ухват', 'Полотенце кухонное'],
       'бельё и полотенца': ['Наволочки', 'Простынь', 'Пододеяльник',
-        'Наматрасник', 'Одеяла', 'Подушки 50×70', 'Подушки 50×50',
+        'Наматрасник', 'Одеяло',
+        { n: 'Подушки', sizes: ['50×70', '50×50'] },
         'Полотенце банное', 'Полотенце для лица'],
-      'предметы быта': ['Сушилка', 'Гладильная доска',
-        'Дозатор для жидкого мыла', 'Мыльница', 'Стакан для щёток',
-        'Ёршик', 'Лопатка для обуви', 'Швабра', 'Моп для швабры'],
+      'предметы быта': ['Сушилка', 'Гладильная доска', 'Дозатор для мыла',
+        'Мыльница', 'Стакан для щёток', 'Ёршик', 'Ведро для мусора',
+        'Лопатка для обуви', 'Швабра', 'Моп для швабры'],
       'расходники': [],
     };
     const ZONES = ['прихожая', 'кухня', 'спальня', 'гостиная', 'санузел', 'ванная'];
@@ -6702,6 +6734,7 @@ window.Forms = (() => {
           (d._pending ? ' · отправляется…' : '')));
       if (canEdit && !d._pending) {
         const btns = h('div', { class: 'kb-moves' });
+        let fixArea = null;
         const patchDef = (p, desc) => {
           Object.assign(d, p);
           Queue.add('сервис_дефект_правка', {
@@ -6712,11 +6745,26 @@ window.Forms = (() => {
           renderDefects();
         };
         if (st === 'принят') {
+          // «Чиним» = связь с реальной задачей квартиры: выпадашка
+          // открытых задач вместо ручного ввода id (REVIEW-P, В-2) —
+          // вписать несуществующий TSK больше нельзя.
+          fixArea = h('div', { class: 'kb-details', style: 'display:none' });
+          const tskSel = selectInput();
+          fillSelect(tskSel, tasks
+            .filter((t) => ['новая', 'в_работе', 'выполнено']
+              .includes(String(t['статус'] || 'новая').trim()))
+            .map((t) => ({
+              value: t['id_задачи'],
+              text: t['id_задачи'] + ' — ' +
+                String(t['описание'] || '').slice(0, 60),
+            })), '— без задачи —');
+          fixArea.append(field('Задача по дефекту', tskSel),
+            mkBtn('в работу', () => patchDef(
+              { 'статус': 'в_работе', 'id_задачи': tskSel.value },
+              'Дефект ' + d['id_дефекта'] + ' → в работе'), 'kb-save'));
           btns.append(mkBtn('чиним →', () => {
-            const tsk = prompt('id задачи (TSK-…), если уже создана — ' +
-              'можно оставить пустым:') || '';
-            patchDef({ 'статус': 'в_работе', 'id_задачи': tsk.trim() },
-              'Дефект ' + d['id_дефекта'] + ' → в работе');
+            fixArea.style.display =
+              fixArea.style.display === 'none' ? '' : 'none';
           }));
           btns.append(mkBtn(
             d['видно_гостю'] === 'да' ? 'скрыть от гостя' : 'показать гостю',
@@ -6733,6 +6781,7 @@ window.Forms = (() => {
               'Дефект ' + d['id_дефекта'] + ' → принят')));
         }
         row.append(btns);
+        if (fixArea) row.append(fixArea);
       }
       return row;
     }
@@ -6811,9 +6860,18 @@ window.Forms = (() => {
     // из него ключ не восстановить.
     function genGuestToken() {
       const abc = 'abcdefghijklmnopqrstuvwxyz0123456789';
-      const buf = new Uint8Array(16);
-      crypto.getRandomValues(buf);
-      return [...buf].map((b) => abc[b % 36]).join('');
+      // Rejection sampling: 256 не кратно 36, голый `b % 36` слегка
+      // перекашивал первые символы алфавита (REVIEW-P, минор 4).
+      const out = [];
+      while (out.length < 16) {
+        const buf = new Uint8Array(32);
+        crypto.getRandomValues(buf);
+        for (const b of buf) {
+          if (out.length === 16) break;
+          if (b < 252) out.push(abc[b % 36]);
+        }
+      }
+      return out.join('');
     }
     async function sha256Hex(s) {
       const d = await crypto.subtle.digest('SHA-256',
@@ -6931,6 +6989,8 @@ window.Forms = (() => {
             String(link['заезд'] || '').slice(0, 10) + ' → ' +
             String(link['выезд'] || '').slice(0, 10) +
             ' · ' + (link['id_ссылки'] || '') +
+            (link['id_операции_брони']
+              ? ' · бронь ' + link['id_операции_брони'] : '') +
             (link._pending ? ' · отправляется…' : ''))));
       if (active && !link._pending) {
         const btns = h('div', { class: 'kb-moves' });
@@ -6950,9 +7010,20 @@ window.Forms = (() => {
           link['обновлено'] = logStamp();
           renderGuestLinks();
         }));
-        btns.append(mkBtn('✕ Погасить', async () => {
-          if (!confirm('Погасить ссылку? Страница гостя перестанет ' +
-            'открываться. Отменить нельзя (можно создать новую).')) return;
+        // Гашение — двойной тап вместо confirm(): в iOS standalone
+        // confirm может молча глотаться (REVIEW-P, минор 3).
+        const offBtn = mkBtn('✕ Погасить', async () => {
+          if (!offBtn._armed) {
+            offBtn._armed = true;
+            offBtn.textContent = 'точно погасить? (отменить нельзя)';
+            offBtn.classList.add('fp-btn-danger');
+            setTimeout(() => {
+              offBtn._armed = false;
+              offBtn.textContent = '✕ Погасить';
+              offBtn.classList.remove('fp-btn-danger');
+            }, 4000);
+            return;
+          }
           const hashHex = await sha256Hex('rento-guest:' + link['токен']);
           Queue.add('гостевая_ссылка_блоб', {
             blob: { hash: hashHex.slice(0, 32), iv: '', blob: '',
@@ -6964,7 +7035,8 @@ window.Forms = (() => {
           });
           link['статус'] = 'погашена';
           renderGuestLinks();
-        }));
+        });
+        btns.append(offBtn);
         row.append(btns);
       }
       return row;
@@ -7000,6 +7072,10 @@ window.Forms = (() => {
       // форма создания
       const inDate = dateInput();
       const outDate = dateInput();
+      // Привязка к брони (ADR-036 п.6, REVIEW-P В-3): пока руками и
+      // опционально — реестра броней в карточке нет; этап-2
+      // («Я ознакомился» к брони) будет писать по этому id.
+      const bookInp = textInput('id операции брони (опционально)');
       const err = h('div', { class: 'field-error', style: 'display:none' });
       const createBtn = mkBtn('Создать ссылку', async () => {
         if (!inDate.value || !outDate.value || outDate.value < inDate.value) {
@@ -7018,6 +7094,7 @@ window.Forms = (() => {
           'токен': token,
           'заезд': inDate.value,
           'выезд': outDate.value,
+          'id_операции_брони': bookInp.value.trim(),
           'статус': 'активна',
           'создал': myId,
           'дата_создания': logStamp(),
@@ -7044,7 +7121,8 @@ window.Forms = (() => {
             'оживёт не мгновенно.')));
       }
       body.append(h('div', { class: 'kb-add fp-form' },
-        field('Заезд', inDate), field('Выезд', outDate), err, createBtn));
+        field('Заезд', inDate), field('Выезд', outDate),
+        field('Бронь', bookInp), err, createBtn));
       det.append(body);
       guestBox.append(det);
     }
@@ -7511,6 +7589,18 @@ window.Forms = (() => {
         fillSelect(sizeCtl, item.sizes.map(
           (s) => ({ value: s, text: s })), 'размер…');
         sizeCtl.append(h('option', { value: '__custom' }, 'свой…'));
+        // «Свой…» превращает селект в текстовое поле — без prompt()
+        // (REVIEW-P, минор 3).
+        sizeCtl.addEventListener('change', () => {
+          if (sizeCtl.value !== '__custom') return;
+          const txt = h('input', {
+            class: 'field-input fp-tpl-size', type: 'text',
+            placeholder: 'размер…',
+          });
+          sizeCtl.replaceWith(txt);
+          sizeCtl = txt;
+          txt.focus();
+        });
       } else if (isObj && item.size) {
         sizeCtl = h('input', {
           class: 'field-input fp-tpl-size', type: 'text',
@@ -7527,8 +7617,7 @@ window.Forms = (() => {
         if (!qty) { qtyInp.focus(); return; }
         let full = name;
         if (sizeCtl) {
-          let sz = sizeCtl.value === '__custom'
-            ? (prompt('Размер:') || '').trim()
+          const sz = sizeCtl.value === '__custom' ? ''
             : String(sizeCtl.value || '').trim();
           if (!sz && isObj && item.sizes) { sizeCtl.focus(); return; }
           if (sz) full = name + ' ' + sz;
@@ -7569,9 +7658,11 @@ window.Forms = (() => {
       return rowEl;
     }
 
-    // Непроставленные позиции шаблона: скрываем те, по которым уже
-    // есть строка листа с тем же началом названия (Кровать → «Кровать
-    // 160/200») в этой группе и комнате.
+    // Непроставленные позиции шаблона: скрываем те, по которым в этой
+    // группе и комнате уже есть строка листа с тем же названием — точным
+    // либо с хвостом через пробел («Кровать 160/200», «Микроволновка
+    // Gorenje»). Голый префикс гасил бы «Кровать» строкой «Кроватка
+    // детская» (REVIEW-P, минор 1).
     function unfilledTemplate(cat, zone, items) {
       const list = ZONED_CATS.includes(cat)
         ? ((INV_TEMPLATE[cat] || {})[zone] || [])
@@ -7581,7 +7672,7 @@ window.Forms = (() => {
       return list.filter((item) => {
         const n = (typeof item === 'object' ? item.n : item)
           .trim().toLowerCase();
-        return !names.some((x) => x.indexOf(n) === 0);
+        return !names.some((x) => x === n || x.indexOf(n + ' ') === 0);
       });
     }
 
@@ -7671,13 +7762,32 @@ window.Forms = (() => {
         }
       });
       if (canEdit) {
-        body.append(mkBtn('+ Комната', () => {
-          const name = (prompt('Название комнаты (например: Балкон, ' +
-            'Вторая спальня):') || '').trim();
-          if (!name) return;
+        // Инлайн-поле вместо prompt() (REVIEW-P, минор 3).
+        const roomInp = h('input', {
+          class: 'field-input fp-ia-name', type: 'text',
+          placeholder: 'Балкон, Вторая спальня…',
+        });
+        const roomAdd = () => {
+          const name = roomInp.value.trim();
+          if (!name) { roomInp.focus(); return; }
           if (!extraZones.includes(name)) extraZones.push(name);
           renderInventory();
+        };
+        const roomBtn = h('button',
+          { class: 'fp-ia-btn', type: 'button' }, '+');
+        roomBtn.addEventListener('click', roomAdd);
+        roomInp.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); roomAdd(); }
+        });
+        const roomRow = h('div',
+          { class: 'fp-inline-add', style: 'display:none' },
+          roomInp, roomBtn);
+        body.append(mkBtn('+ Комната', () => {
+          const hidden = roomRow.style.display === 'none';
+          roomRow.style.display = hidden ? '' : 'none';
+          if (hidden) roomInp.focus();
         }));
+        body.append(roomRow);
         body.append(h('p', { class: 'field-hint' },
           'Серые позиции — стандартный список: есть в квартире — ' +
           'поставьте количество (Enter или «+»), нет — оставьте пустым, ' +
@@ -7744,10 +7854,29 @@ window.Forms = (() => {
       renderGuestLinks(); renderTasks();
     }
     load();
-    Queue.onCommitted((item) => {
+    // Фоновый перезагруз не в момент набора (REVIEW-P, минор 2):
+    // load() пересоздаёт DOM и съедал бы текст, набранный в
+    // «+ позиция…» или в форме секции. Ждём, пока фокус уйдёт из
+    // инпутов карточки и опустеют черновики быстрого добавления.
+    let reloadT = null;
+    function reloadWhenIdle() {
+      clearTimeout(reloadT);
+      const a = document.activeElement;
+      const typing = a && content.contains(a) &&
+        ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName);
+      const drafts = [...content.querySelectorAll('.fp-ia-name')]
+        .some((el) => el.value.trim());
+      if (typing || drafts) {
+        reloadT = setTimeout(reloadWhenIdle, 2000);
+        return;
+      }
+      load();
+    }
+    const offCommitted = Queue.onCommitted((item) => {
       if (item && ['сервис_задача', 'сервис_опись_добавление',
         'сервис_инструкция', 'сервис_дефект', 'гостевая_ссылка']
-        .includes(item.formType) && document.body.contains(content)) load();
+        .includes(item.formType) &&
+        document.body.contains(content)) reloadWhenIdle();
     });
 
     return Screens.formScreen({
@@ -7756,7 +7885,11 @@ window.Forms = (() => {
       subtitle: 'Паспорт · опись · задачи',
       breadcrumb: 'Сервис › Паспорт квартиры',
       content,
-      onBack: () => opts.onExit(),
+      onBack: () => {
+        clearTimeout(reloadT);
+        offCommitted();
+        opts.onExit();
+      },
       onRefresh: opts.onRefresh, onLogout: opts.onLogout,
       onOpenHelp: opts.onOpenHelp,
     });

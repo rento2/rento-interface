@@ -1175,6 +1175,10 @@ body {
   transition: background 0.12s, border-color 0.12s;
 }
 .kb-move-btn:hover { background: var(--lime-100); border-color: var(--lime-500); }
+/* Второй тап подтверждения («точно погасить?») — REVIEW-P, минор 3. */
+.fp-btn-danger, .fp-btn-danger:hover {
+  color: #fff; background: var(--error); border-color: var(--error);
+}
 .kb-save { background: var(--lime-500); border-color: var(--lime-500); }
 
 .kb-foot { margin-top: 8px; font-size: 11px; }

@@ -158,7 +158,15 @@ window.Queue = (() => {
   }
 
   function onChange(fn) { changeListeners.push(fn); }
-  function onCommitted(fn) { commitListeners.push(fn); }
+  // Возвращает отписку — экраны снимают слушателя при выходе, иначе
+  // они копятся по одному на каждое открытие (REVIEW-P, минор 2).
+  function onCommitted(fn) {
+    commitListeners.push(fn);
+    return () => {
+      const i = commitListeners.indexOf(fn);
+      if (i !== -1) commitListeners.splice(i, 1);
+    };
+  }
   function setAuthErrorHandler(fn) { authErrorHandler = fn; }
 
   // Восстановить операции, зависшие в 'sending' (REVIEW-2, критичное #1).
