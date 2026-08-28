@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Доска задач и паспорт квартиры — памятка</title>
+  <link rel="icon" type="image/svg+xml" href="assets/rento-mark.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=Unbounded:wght@500;600&display=swap" />
+  <style>
+    :root {
+      --bg: #FAFAF6;
+      --surface: #FFFFFF;
+      --ink: #20261B;
+      --muted: #6C7463;
+      --accent: #4D7C0F;
+      --accent-soft: #EDF3E0;
+      --border: #DDE2D4;
+      --rule-bg: #F3F6EA;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #161A12;
+        --surface: #1E2419;
+        --ink: #E7ECDE;
+        --muted: #98A18C;
+        --accent: #A3E635;
+        --accent-soft: #26301C;
+        --border: #333B2B;
+        --rule-bg: #212819;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Golos Text", "Helvetica Neue", Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.55;
+      margin: 0;
+      padding: 40px 20px 72px;
+    }
+    .page { max-width: 40rem; margin: 0 auto; }
+    header { margin-bottom: 40px; }
+    .eyebrow {
+      font-size: 12px; font-weight: 600; letter-spacing: 0.14em;
+      text-transform: uppercase; color: var(--accent); margin: 0 0 10px;
+    }
+    h1 {
+      font-family: "Unbounded", "Golos Text", sans-serif;
+      font-weight: 600; font-size: clamp(24px, 5vw, 32px);
+      line-height: 1.2; margin: 0 0 12px; text-wrap: balance;
+    }
+    .lede { color: var(--muted); margin: 0; max-width: 34rem; }
+    .lede a { color: var(--accent); font-weight: 500; }
+    h2 {
+      font-family: "Unbounded", "Golos Text", sans-serif;
+      font-weight: 500; font-size: 21px; line-height: 1.25;
+      margin: 0; text-wrap: balance;
+    }
+    section { margin-top: 44px; }
+    .part-head {
+      display: flex; align-items: baseline; gap: 12px;
+      border-bottom: 2px solid var(--accent);
+      padding-bottom: 10px; margin-bottom: 20px;
+    }
+    h3 { font-size: 16.5px; font-weight: 600; margin: 26px 0 8px; }
+    p { margin: 0 0 12px; }
+    ul { margin: 0 0 12px; padding-left: 22px; }
+    li { margin-bottom: 6px; }
+    li::marker { color: var(--accent); }
+    .muted { color: var(--muted); }
+    .rule {
+      background: var(--rule-bg);
+      border-left: 3px solid var(--accent);
+      border-radius: 0 10px 10px 0;
+      padding: 12px 16px; margin: 0 0 16px;
+    }
+    .rule p { margin: 0; }
+    .btn, .chip {
+      display: inline-block;
+      font-size: 0.82em; font-weight: 600;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 1px 10px 2px;
+      white-space: nowrap;
+      vertical-align: baseline;
+    }
+    .btn { color: var(--accent); border-color: var(--accent); }
+    .flow {
+      display: flex; flex-wrap: wrap; align-items: center;
+      gap: 6px; margin: 4px 0 16px;
+    }
+    .flow .arr { color: var(--muted); }
+    .flow .chip.on {
+      background: var(--accent-soft); border-color: var(--accent);
+    }
+    dl { margin: 0 0 12px; }
+    dt { font-weight: 600; margin-top: 10px; }
+    dd { margin: 2px 0 0 0; color: var(--muted); }
+    dd b { color: var(--ink); font-weight: 500; }
+    footer {
+      margin-top: 52px; padding-top: 14px;
+      border-top: 1px solid var(--border);
+      font-size: 13px; color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+<header>
+  <p class="eyebrow">Ренто · памятка команде</p>
+  <h1>Доска задач и паспорт квартиры</h1>
+  <p class="lede">Что и как заполнять в
+    <a href="./">интерфейсе</a>.
+    Вход — через свой Google-аккаунт. Чтение на три минуты.</p>
+</header>
+
+<section>
+  <div class="part-head"><h2>Доска задач</h2></div>
+
+  <div class="rule"><p><b>Дела по одной квартире, которые можно
+  закрыть за один день, — одна задача с чек-листом</b> (пункт на
+  каждое дело). Дело на будущее, с другим сроком, — отдельная
+  задача.</p></div>
+
+  <h3>Завести задачу</h3>
+  <p>Кнопка <span class="btn">+ Добавить задачу</span> на доске или
+  <span class="btn">+ Задача</span> прямо в карточке квартиры —
+  квартира подставится сама. Заполните:</p>
+  <ul>
+    <li><b>Что сделать</b> — коротко и конкретно: «заменить смеситель
+      на кухне», а не «посмотреть ванную».</li>
+    <li><b>Тип</b> — уборка / сервис / ремонт / закупка. Для уборки —
+      плановая или генеральная.</li>
+    <li><b>Исполнитель</b> и <b>срок</b>.</li>
+    <li><b>Цена</b> — если известна; для закупки — примерный
+      бюджет.</li>
+    <li><b>Чек-лист</b> — пункт на каждое дело: вписали → Enter →
+      следующий.</li>
+  </ul>
+
+  <h3>Вести задачу</h3>
+  <p>Колонки доски — это статусы:</p>
+  <div class="flow">
+    <span class="chip">новая</span><span class="arr">→</span>
+    <span class="chip">в работе</span><span class="arr">→</span>
+    <span class="chip">выполнено</span><span class="arr">→</span>
+    <span class="chip on">подтверждено</span>
+  </div>
+  <ul>
+    <li>Взяли задачу — <span class="btn">Взять в работу</span>.
+      Сделали — <span class="btn">Выполнено</span>.</li>
+    <li>Тап по карточке задачи — всё остальное: отмечайте пункты
+      чек-листа по ходу, вписывайте потраченное на материалы, если
+      покупали сами.</li>
+    <li><span class="btn">✓ Подтвердить</span> — только менеджер,
+      после проверки. Не принял — <span class="btn">← Вернуть</span>
+      с причиной, задача уходит обратно в работу.</li>
+    <li>Отменить задачу может менеджер. Если задача чинила дефект —
+      дефект сам вернётся в «принят».</li>
+    <li>Исполнитель видит только свои задачи. По выполненным уходит
+      пуш в Telegram.</li>
+  </ul>
+</section>
+
+<section>
+  <div class="part-head"><h2>Паспорт квартиры</h2></div>
+
+  <div class="rule"><p><b>Паспорт — единственное место, где записано
+  всё о квартире.</b> Из него собираются страница гостя, данные для
+  объявлений и ответы на вопросы гостей. Чего нет в паспорте — того
+  не существует.</p></div>
+
+  <h3>С чего начать</h3>
+  <p>В шапке карточки — «Паспорт заполнен N%» и строка
+  «Не&nbsp;хватает: …». Сначала закройте «не хватает» — это ровно то,
+  что гости спрашивают чаще всего: заезд и выезд, коды, Wi-Fi, куда
+  мусор.</p>
+
+  <h3>Как заполнять секции</h3>
+  <p>Каждая секция открывается тапом и сама является формой: вписали
+  значения → <span class="btn">Сохранить</span> внизу секции →
+  всплывёт «Сохранено». Числа пишите как привычно — «43,7»
+  подойдёт.</p>
+  <dl>
+    <dt>Дом и квартира</dt>
+    <dd>площадь, этаж, лифт, парковка.</dd>
+    <dt>Вместимость и правила</dt>
+    <dd>гости, залог, заезд/выезд, можно/нельзя. Блок один в один
+      уходит в объявления.</dd>
+    <dt>Доступ и заселение</dt>
+    <dd>где ключи, коды — скрыты точками, показать тапом.</dd>
+    <dt>Интернет · Инженерка</dt>
+    <dd>Wi-Fi, щиток, краны, счётчики, аварийная УК.</dd>
+    <dt>Уборка</dt>
+    <dd>как убирать именно эту квартиру и где что лежит.</dd>
+    <dt>Инструкции</dt>
+    <dd>свободные тексты по разделам (заселение, техника, район…).
+      У каждой — аудитория: <b>«гость»</b> увидит гость,
+      <b>«команда»</b> — только мы.</dd>
+  </dl>
+
+  <h3>Опись имущества</h3>
+  <p>Серые строки — стандартный список:</p>
+  <ul>
+    <li>есть в квартире → поставьте количество и Enter (или «+»);</li>
+    <li>нет — просто пропустите, в опись ничего не запишется;</li>
+    <li>нет в списке — впишите в строку
+      <span class="btn">+ позиция…</span>;</li>
+    <li>новая комната — <span class="btn">+ Комната</span>;</li>
+    <li>кровать и телевизор попросят размер;</li>
+    <li>состояние и принадлежность ставятся сами, поправить — тап по
+      строке.</li>
+  </ul>
+
+  <h3>Дефекты</h3>
+  <p>Всё, что приняли и с чем живём: скол на столешнице, царапина на
+  полу. Указывайте, откуда узнали: приёмка / гость / обход / уборка.</p>
+  <ul>
+    <li><span class="btn">видно гостю</span> — дефект покажется на
+      странице гостя как зафиксированный до заезда: это наша защита
+      в спорах.</li>
+    <li>Решили чинить — <span class="btn">чиним →</span> и выберите
+      задачу из списка: дефект уйдёт «в работу», а если задачу
+      отменят — вернётся сам.</li>
+  </ul>
+
+  <h3>Ссылка гостю <span class="muted">(только менеджеры)</span></h3>
+  <p>Создаётся после договора, паспорта и селфи гостя: заезд, выезд,
+  бронь (если знаете id) → <span class="btn">Создать ссылку</span> →
+  скопировать и отправить гостю самому. Гость видит только гостевую
+  часть паспорта и акт описи, менять ничего не может.</p>
+  <ul>
+    <li>Поправили паспорт или опись при живой ссылке —
+      <span class="btn">⟳ Обновить данные</span>.</li>
+    <li>Ссылка ушла не туда или гость съехал —
+      <span class="btn">✕ Погасить</span>: кнопка спросит второй раз;
+      вернуть нельзя, только создать новую.</li>
+    <li>Сама по себе ссылка гаснет через 2 дня после выезда.</li>
+  </ul>
+
+  <h3>Кто что может</h3>
+  <p>Заполняют менеджер и супервайзер. Горничная и техник видят
+  паспорт без правки и работают со своими задачами.</p>
+</section>
+
+<footer>28.08.2026 · интерфейс v68 · вопросы — Макару</footer>
+</div>
+</body>
+</html>
