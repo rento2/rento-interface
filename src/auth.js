@@ -76,6 +76,14 @@ window.Auth = (() => {
         fetchEmail(resp.access_token);   // узнаём Google-аккаунт (фоном)
         onTokenCallback(token, null, lastMode);
       },
+      // Без error_callback GIS молчит, когда попап входа не открылся
+      // (блокировщик всплывающих окон, встроенный браузер мессенджера)
+      // или закрыт до выбора аккаунта — и кнопка застревала на
+      // «Ожидание Google…» навсегда (жалоба супервайзера 28.08).
+      error_callback: (err) => {
+        onTokenCallback(null,
+          { error: (err && err.type) || 'popup_error' }, lastMode);
+      },
     });
   }
 

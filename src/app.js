@@ -1207,11 +1207,23 @@
         return;
       }
       console.error('OAuth:', errorResp);
-      const scopeDenied = errorResp && errorResp.error === 'scope_not_granted';
-      showConnect(scopeDenied
-        ? 'Доступ к Google Таблицам не выдан. Нажмите «Подключить» ещё ' +
-          'раз и оставьте галочку доступа к Таблицам включённой.'
-        : 'Google не выдал доступ. Повторите вход.');
+      const code = errorResp && errorResp.error;
+      let msg;
+      if (code === 'scope_not_granted') {
+        msg = 'Доступ к Google Таблицам не выдан. Нажмите «Подключить» ' +
+          'ещё раз и оставьте галочку доступа к Таблицам включённой.';
+      } else if (code === 'popup_failed_to_open') {
+        msg = 'Браузер заблокировал окно входа Google. Разрешите ' +
+          'всплывающие окна для этой страницы и попробуйте ещё раз. ' +
+          'Если ссылка открыта из мессенджера — откройте её в Safari ' +
+          'или Chrome.';
+      } else if (code === 'popup_closed') {
+        msg = 'Окно входа Google закрылось до выбора аккаунта. ' +
+          'Нажмите «Подключить» ещё раз.';
+      } else {
+        msg = 'Google не выдал доступ. Повторите вход.';
+      }
+      showConnect(msg);
       return;
     }
     // Фоновое продление: только обновляем токен для Sheets и

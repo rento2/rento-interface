@@ -50,9 +50,35 @@ window.Screens = (() => {
       btn.addEventListener('click', () => {
         btn.disabled = true;
         btn.textContent = 'Ожидание Google…';
+        // Сторож: даже с error_callback GIS может промолчать (окно
+        // потерялось за другим приложением на телефоне). Через 45 с
+        // возвращаем кнопку и объясняем, что делать, — раньше экран
+        // застревал до перезагрузки страницы (жалоба супервайзера).
+        setTimeout(() => {
+          if (!document.body.contains(btn) || !btn.disabled) return;
+          btn.disabled = false;
+          btn.textContent = 'Подключить Google-аккаунт';
+          errorBox.textContent = 'Google не ответил. Обычно это ' +
+            'заблокированное или потерянное окно входа: разрешите ' +
+            'всплывающие окна для этой страницы и нажмите ещё раз.';
+          errorBox.style.display = '';
+        }, 45000);
         opts.onConnect();
       });
     }
+
+    // Встроенные браузеры мессенджеров: Google не разрешает в них
+    // OAuth-вход (disallowed_useragent) — предупреждаем сразу, а не
+    // после зависшего попапа. iOS Telegram в UA не палится — его
+    // ловят сторож выше и error_callback.
+    const inApp = /Instagram|FBAN|FBAV|VKClient|WhatsApp|Telegram|Line\/|; wv\)/i
+      .test(navigator.userAgent);
+    const inAppHint = inApp
+      ? h('p', { class: 'muted' },
+        'Похоже, страница открыта во встроенном браузере мессенджера — ' +
+        'Google не разрешает вход из него. Откройте ссылку в Safari ' +
+        'или Chrome (меню «⋯» → «Открыть в браузере»).')
+      : '';
 
     app.append(h('div', { class: 'auth-wrap' },
       h('div', { class: 'card auth-card' },
@@ -61,6 +87,7 @@ window.Screens = (() => {
           h('h1', { class: 'h1' }, 'Войти в систему'),
           h('p', { class: 'muted' }, 'Внутренний учёт Ренто')),
         errorBox,
+        inAppHint,
         btn)));
   }
 
