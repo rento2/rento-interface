@@ -293,10 +293,26 @@ window.Screens = (() => {
     // после миграции TSK (TICKET-С1.0), поэтому карточка сразу ведёт на
     // новую доску; старая ('задачи_сервис') остаётся в FORM_OPENERS на
     // переходный период.
+    // «Ставки уборок» — внешняя статическая страница cleaners.html
+    // (адреса + расценки, без входа; генерится scripts/gen_cleaners_page.py).
+    // Карточка-ссылка: открывает в новом окне, чтобы ссылку было удобно
+    // скопировать и переслать горничным (решение Макара 08.09.2026).
+    function linkCard(label, url, icon) {
+      const node = h('div', {
+        class: 'form-card form-card-active', role: 'button',
+        title: 'Откроется в новом окне — страница без входа, можно переслать горничным',
+      },
+        h('span', { class: 'form-card-icon' }, icon || '🔗'),
+        h('span', { class: 'form-card-label' }, label));
+      node.addEventListener('click', () => window.open(url, '_blank', 'noopener'));
+      return node;
+    }
+
     actions.append(h('span', { class: 'eyebrow eyebrow-sub' }, 'СЕРВИС'));
     actions.append(h('div', { class: 'cards-grid' },
       card('Доска задач', 'доска_сервис', '📋'),
-      card('Паспорт квартиры', 'квартиры', '🏠')));
+      card('Паспорт квартиры', 'квартиры', '🏠'),
+      linkCard('Ставки уборок', 'cleaners.html', '🧹')));
 
     // Справочники (TICKET-8.1..8.3 / ADR-026). Доступны всем сотрудникам
     // (доработка 28.05.2026, решение Абдулы) — не только основателю.
