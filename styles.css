@@ -126,6 +126,36 @@ body {
   transition: border-color 0.12s, box-shadow 0.12s, background 0.12s;
 }
 .field-input::placeholder { color: var(--text-3); }
+
+/* «Читать полностью»: текст не влез в поле — читаем и правим целиком
+   в модалке (фаундер 21.09). Подсказку вешает field() на все текстовые
+   поля, показывает её замер в attachMoreLink() — у коротких значений
+   её не видно. */
+.field-more {
+  align-self: flex-start;
+  padding: 2px 0;
+  min-height: 24px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: none;
+  border: none;
+  border-bottom: 1px dashed var(--text-3);
+  border-radius: 0;
+  cursor: pointer;
+}
+.field-more:hover { color: var(--ink); border-bottom-color: var(--ink); }
+
+.field-full { display: flex; flex-direction: column; gap: 16px; }
+.field-full-area { min-height: 200px; }
+.field-full-actions { display: flex; gap: 12px; }
+.field-full-actions > button {
+  flex: 1;
+  width: auto;
+  padding: 0 16px;
+  height: 48px;
+}
 .field-input:focus {
   background: var(--surface-0);
   border-color: var(--lime-500);
@@ -1031,6 +1061,8 @@ body {
     border-radius: 0;
     padding: 20px 16px 40px;
   }
+  /* Модалка «Читать полностью» занимает экран — поле под текст выше. */
+  .field-full-area { min-height: 240px; }
 }
 
 /* Совсем узкий экран (iPhone SE и мельче): имя в чипе прячем — остаётся
@@ -1530,7 +1562,9 @@ body {
 
 /* Формы карточки — сетка с подписями и тёмной главной кнопкой,
    как в черновике-макете (согласован фаундером 27.08). */
-.fp-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+/* Ряды разведены шире колонок: под полем может стоять «Читать
+   полностью», и она должна читаться как часть своего поля. */
+.fp-form { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 10px; }
 .fp-form .field { gap: 4px; }
 .fp-form .field-label { font-size: 12px; }
 .fp-form > .field-error,

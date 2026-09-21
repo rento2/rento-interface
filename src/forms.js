@@ -74,8 +74,83 @@ window.Forms = (() => {
     kids.push(error);
     const wrap = h('div', { class: 'field' }, ...kids);
     wrap._error = error;
+    // Длинное значение целиком не влезает в поле — под ним появляется
+    // «Читать полностью» (opts.noMore отключает).
+    if (!opts.noMore) attachMoreLink(wrap, control, label);
     return wrap;
   }
+
+  // --- «Читать полностью»: длинный текст в модалке ---------------------
+  // Однострочный input текст не переносит: в форме видно ~25–30 знаков,
+  // остальное обрезано (фаундер 21.09, скрин паспорта «Инженерка и
+  // аварийное»). Решение — поле остаётся однострочным, а целиком текст
+  // читается и правится в модалке. Подсказка вешается на ВСЕ текстовые
+  // поля («ко всем полям куда не помещается текст», он же), но видна
+  // только там, где текст реально обрезан, — у коротких значений её нет.
+  function fieldOverflows(inp) {
+    return inp.tagName === 'TEXTAREA'
+      ? inp.scrollHeight > inp.clientHeight + 2
+      : inp.scrollWidth > inp.clientWidth + 2;
+  }
+
+  function openFullField(label, inp, sync) {
+    const multiline = inp.tagName === 'TEXTAREA';
+    const area = h('textarea', {
+      class: 'field-input field-textarea field-full-area',
+      placeholder: inp.placeholder || '',
+    });
+    area.value = inp.value;
+    const cancel = h('button',
+      { class: 'btn-ghost', type: 'button' }, 'Отмена');
+    const ok = h('button',
+      { class: 'btn-primary', type: 'button' }, 'Готово');
+    const m = UI.modal(label, h('div', { class: 'field-full' }, area,
+      h('div', { class: 'field-full-actions' }, cancel, ok)));
+    cancel.addEventListener('click', () => m.close());
+    ok.addEventListener('click', () => {
+      // Перенос строки однострочный input вырезает молча и склеивает
+      // соседние слова — меняем его на пробел сами.
+      inp.value = multiline ? area.value
+        : area.value.replace(/\s*\n+\s*/g, ' ').trim();
+      // Форма могла считать что-то от этого поля (суммы, подсказки) —
+      // правка из модалки для неё такая же, как правка руками.
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+      m.close();
+      sync();
+    });
+    area.focus();
+  }
+
+  function attachMoreLink(wrap, inp, label) {
+    if (!inp || !inp.tagName) return;
+    // Селекторы, даты, время и числа не режутся; _decimal — числовые
+    // поля паспорта, они тоже type="text" (см. passportControl).
+    const plain = inp.tagName === 'INPUT'
+      && (inp.type === 'text' || inp.type === 'search') && !inp._decimal;
+    if (inp.tagName !== 'TEXTAREA' && !plain) return;
+    const btn = h('button', { class: 'field-more', type: 'button' },
+      'Читать полностью');
+    btn.style.display = 'none';
+    const sync = () => {
+      btn.style.display = fieldOverflows(inp) ? '' : 'none';
+    };
+    btn.addEventListener('click', () => openFullField(label, inp, sync));
+    inp.addEventListener('input', sync);
+    // В момент сборки формы поле ещё вне DOM, а внутри закрытой секции
+    // паспорта у него нулевые размеры — мерить по таймеру ненадёжно.
+    // ResizeObserver срабатывает ровно тогда, когда поле получает
+    // ширину: при вставке в DOM, раскрытии секции, повороте экрана и
+    // смене числа колонок.
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(sync);
+      ro.observe(inp);
+      inp._moreRO = ro; // ссылка живёт вместе с полем
+    } else {
+      requestAnimationFrame(sync);
+    }
+    wrap.insertBefore(btn, wrap._error);
+  }
+
   function showError(fieldWrap, message) {
     fieldWrap._error.textContent = message;
     fieldWrap._error.style.display = '';
